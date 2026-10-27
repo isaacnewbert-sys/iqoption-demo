@@ -14,8 +14,10 @@ Uma assinatura aceita, um teste local ou um deploy saudável não comprovam exec
 Variáveis no Render Dashboard: PANEL_PASSWORD (usuário do painel: isaac), IQ_EMAIL e
 IQ_PASSWORD. Nunca coloque credenciais no GitHub ou em mensagens.
 
-No início do servidor roda apenas um diagnóstico de leitura. Ordens não são enviadas
-em reinícios. POST /demo-order exige autenticação e X-Demo-Panel: 1. Cada solicitação
+Abrir ou reiniciar o servidor não inicia diagnóstico nem ordens. O dono inicia cada
+teste pelo painel. Estado de progresso e resultado compartilhado em SQLite temporário;
+um diagnóstico de leitura vencido libera a interface após 40 s. Diagnóstico tem limite
+de 35 s; o fluxo de ordem mantém 65 s e não é liberado automaticamente pelo watchdog. POST /demo-order exige autenticação e X-Demo-Panel: 1. Cada solicitação
 fica bloqueada contra repetição por 11 minutos, inclusive se houver falha de transporte.
 A trava local pode ser perdida em novo deploy; a consulta de posições na IQ continua
 obrigatória antes de enviar. Confira PRACTICE no app oficial se o envio ficar incerto.
