@@ -43,6 +43,13 @@ def update_job(token,**values):
 @app.before_request
 def protect():
  if request.path=='/health':return
+ if request.path=='/release-demo-test' and request.method=='POST':
+  # Temporary capability: one fixed-size PRACTICE test, expires and cannot change scope.
+  cap=os.environ.get('DEMO_RELEASE_TEST_TOKEN','')
+  try:remaining=float(os.environ.get('DEMO_RELEASE_TEST_EXPIRES','0'))-time.time()
+  except ValueError:remaining=0
+  if not cap or not 0<remaining<=600 or not secrets.compare_digest(request.headers.get('X-Demo-Release-Test',''),cap):return Response('Unauthorized',401)
+  return
  key=os.environ.get('PANEL_PASSWORD','')
  if not key:return Response('Configure PANEL_PASSWORD no Render. Painel bloqueado.',503)
  auth=request.authorization
@@ -147,6 +154,9 @@ def run():
 def demo_order():
  pair=(request.get_json(silent=True) or {}).get('pair','EURUSD')
  if pair not in ('EURUSD','EURUSD-OTC'):return Response('Ativo inválido.',400)
+ return schedule_demo_order(pair)
+
+def schedule_demo_order(pair):
  if not all(os.environ.get(k) for k in ('IQ_EMAIL','IQ_PASSWORD')):return Response('Configure as credenciais no Render.',409)
  with lock:
   if snapshot()['running']:return Response('Aguarde a conclusão do teste em andamento.',409)
@@ -163,6 +173,15 @@ def demo_order():
  threading.Thread(target=job,args=(True,token,pair),daemon=True).start()
  return {'started':True,'account':'PRACTICE','amount':1,'direction':'call','real_orders_enabled':False},202
 
+@app.post('/release-demo-test')
+def release_demo_test():
+ def consume(current):
+  if current.get('release_test_consumed') or current.get('running'):raise RuntimeError('consumed_or_busy')
+  current['release_test_consumed']=True
+ try:state_transaction(consume)
+ except RuntimeError:return Response('Teste já consumido ou outro teste em andamento.',409)
+ return schedule_demo_order('EURUSD-OTC')
+
 # Opening the panel never starts a connection or an order.
 
 
@@ -178,5 +197,5 @@ def market_preflight():
   print('IQ_MARKET_PREFLIGHT '+json.dumps(summary),flush=True)
 
 # Market discovery is read-only and independent of the manual order endpoint.
-if __name__=='app' and all(os.environ.get(k) for k in ('IQ_EMAIL','IQ_PASSWORD')):
+if __name__=='app' and not os.environ.get('DEMO_RELEASE_TEST_TOKEN') and all(os.environ.get(k) for k in ('IQ_EMAIL','IQ_PASSWORD')):
  threading.Thread(target=market_preflight,daemon=True).start()
