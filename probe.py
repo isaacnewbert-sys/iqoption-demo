@@ -1,4 +1,4 @@
-"""Local PRACTICE-only compatibility probe. Never submits buy/sell orders."""
+"""PRACTICE-only connector. One explicit demo test order after market validation."""
 import argparse
 import getpass
 import logging
@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v16-instrument-compatibility'
+VERSION = 'server-v17-demo-test-order'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -18,6 +18,7 @@ class WireTrace:
     def __init__(self):
         self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]; self.instrument_schema=[]; self.instruments_raw_count=0
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
+        self.order_request_id=None; self.order_reply=None; self.order_attempted=False
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
         self.new_packets=[]; self.secrets=[]; self.subscription_responses=[]; self.request_id="spotlab-readonly-digital-5m"
@@ -33,6 +34,11 @@ class WireTrace:
             label=name if name in known else 'other'
             self.event_counts[label]=self.event_counts.get(label,0)+1
             rid=str(event.get('request_id',''))
+            if self.order_request_id and rid==self.order_request_id and isinstance(body,dict):
+                if name in ('digital-option-placed','digital-options.digital-option-placed') and isinstance(body.get('id'),int) and not isinstance(body['id'],bool) and body['id']>0:
+                    self.order_reply={'status':'ORDEM_DEMO_CONFIRMADA','order_id':body['id']}
+                elif body.get('success') is False:
+                    self.order_reply={'status':'ORDEM_DEMO_RECUSADA'}
             if rid==self.request_id+'-catalog' and isinstance(body,dict) and isinstance(body.get('underlying'),list):
                 self.catalog_received=True
                 self.catalog_assets=[{'active_id':r['active_id'],'name':r['name'],'is_suspended':r.get('is_suspended') if isinstance(r.get('is_suspended'),bool) else None} for r in body['underlying'] if isinstance(r,dict) and isinstance(r.get('active_id'),int) and isinstance(r.get('name'),str) and re.fullmatch(r'[A-Za-z0-9_/. -]{1,50}',r['name'])][:100]
@@ -267,7 +273,55 @@ def inspect_client(client, pair, progress=lambda stage: None):
             'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if contracts else ('ATIVO_NAO_LISTADO_NO_CATALOGO_DIGITAL' if trace.catalog_received and not trace.catalog_match else 'CONTRATOS_5M_NAO_CONFIRMADOS'),
             'websocket':trace.summary()}
 
-def worker(queue, email, password, pair):
+def send_demo_test(client):
+    """One fixed-size demo CALL. Never retry an uncertain submission."""
+    trace=client.trace
+    blocked=lambda reason:{'order_status':reason,'orders_sent':0,'order_attempted':False}
+    if trace.order_attempted:return blocked('BLOQUEADO_TENTATIVA_JA_REALIZADA')
+    if client.get_balance_mode()!='PRACTICE':return blocked('BLOQUEADO_CONTA_NAO_DEMO')
+    balance_id=client.get_balance_id()
+    profile=client.get_profile_ansyc()
+    balance=next((b for b in profile.get('balances',[]) if b.get('id')==balance_id and b.get('type')==4),None)
+    if not balance:return blocked('BLOQUEADO_SALDO_DEMO_NAO_CONFIRMADO')
+    # Bound the SDK's normally unbounded position lookup. Unknown schema blocks sending.
+    client.api.positions=None
+    client.api.get_positions('digital-option')
+    deadline=time.monotonic()+5
+    while client.api.positions is None and time.monotonic()<deadline:time.sleep(.05)
+    response=client.api.positions
+    if not isinstance(response,dict) or response.get('status')!=2000:return blocked('BLOQUEADO_POSICOES_NAO_CONFIRMADAS')
+    body=response.get('msg',{})
+    positions=body.get('positions') if isinstance(body,dict) else None
+    if not isinstance(positions,list):return blocked('BLOQUEADO_FORMATO_POSICOES')
+    if positions:return blocked('BLOQUEADO_POSICAO_DIGITAL_EXISTENTE')
+    contracts=verified_contracts(trace,client.api.timesync.server_timestamp)
+    contract=next((c for c in contracts if c['direction']=='call'),None)
+    if not contract:return blocked('BLOQUEADO_SEM_CONTRATO_5M_VALIDO')
+    instrument=next((i for i in trace.instruments if i['period']==300 and i['expiration']==contract['expiration_timestamp'] and any(d['symbol']==contract['symbol'] and d['direction']=='call' for d in i['symbols'])),None)
+    if not instrument:return blocked('BLOQUEADO_INSTRUMENTO_NAO_CONFIRMADO')
+    if instrument['expiration']-instrument['deadtime']-client.api.timesync.server_timestamp<15:return blocked('BLOQUEADO_VENCIMENTO_PROXIMO')
+    # Recheck account immediately before the only write; never construct a contract ID.
+    if client.get_balance_mode()!='PRACTICE' or client.get_balance_id()!=balance_id:return blocked('BLOQUEADO_CONTA_ALTERADA')
+    import uuid
+    trace.order_request_id='demo-test-'+uuid.uuid4().hex
+    trace.order_attempted=True
+    payload={'name':'digital-options.place-digital-option','version':'3.0','body':{
+        'amount':'1','asset_id':trace.asset_id,'instrument_id':contract['symbol'],
+        'instrument_index':int(instrument['index']),'user_balance_id':int(balance_id)}}
+    result={'order_status':'ENVIO_INCERTO_NAO_REPETIR','orders_sent':None,'order_attempted':True,'amount':1,'direction':'call','account':'PRACTICE','expiration_timestamp':instrument['expiration'],'early_sell_verified':False}
+    try:
+        client.api.send_websocket_request('sendMessage',payload,request_id=trace.order_request_id)
+        deadline=time.monotonic()+8
+        while trace.order_reply is None and time.monotonic()<deadline:time.sleep(.05)
+        if trace.order_reply:
+            result.update(order_status=trace.order_reply['status'],orders_sent=1 if trace.order_reply['status']=='ORDEM_DEMO_CONFIRMADA' else 0)
+            if 'order_id' in trace.order_reply:result['order_id']=trace.order_reply['order_id']
+    except Exception:
+        # Transport errors after calling send may still mean the server received the order.
+        pass
+    return result
+
+def worker(queue, email, password, pair, test_order=False):
     # The old SDK may write authentication details on errors; suppress its logs.
     logging.disable(logging.CRITICAL)
     import contextlib
@@ -290,6 +344,9 @@ def worker(queue, email, password, pair):
                 return
             progress("Conexão inicial aceita; verificando conta")
             result = inspect_client(client,pair,progress)
+            if test_order:
+                progress('Validando conta e condições para uma ordem demonstrativa de 1 unidade')
+                result.update(send_demo_test(client))
         queue.put(result)
     except Exception as error:
         # Do not print exception contents: SDK may embed credentials or account IDs.
