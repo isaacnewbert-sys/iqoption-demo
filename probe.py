@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v21-profit-exit-8'
+VERSION = 'server-v22-call-put'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -287,10 +287,11 @@ def inspect_client(client, pair, progress=lambda stage: None):
             'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if contracts else ('ATIVO_NAO_LISTADO_NO_CATALOGO_DIGITAL' if trace.catalog_received and not trace.catalog_match else 'CONTRATOS_5M_NAO_CONFIRMADOS'),
             'websocket':trace.summary()}
 
-def send_demo_test(client,take_profit_8=False):
-    """One fixed-size demo CALL. Never retry an uncertain submission."""
+def send_demo_test(client,take_profit_8=False,direction="call"):
+    """One fixed-size demo CALL or PUT. Never retry an uncertain submission."""
     trace=client.trace
     blocked=lambda reason:{'order_status':reason,'orders_sent':0,'order_attempted':False}
+    if direction not in ('call','put'):return blocked('BLOQUEADO_DIRECAO_INVALIDA')
     if trace.order_attempted:return blocked('BLOQUEADO_TENTATIVA_JA_REALIZADA')
     if client.get_balance_mode()!='PRACTICE':return blocked('BLOQUEADO_CONTA_NAO_DEMO')
     balance_id=client.get_balance_id()
@@ -312,9 +313,9 @@ def send_demo_test(client,take_profit_8=False):
     if not isinstance(positions,list):return blocked('BLOQUEADO_FORMATO_POSICOES')
     if positions:return blocked('BLOQUEADO_POSICAO_DIGITAL_EXISTENTE')
     contracts=verified_contracts(trace,client.api.timesync.server_timestamp)
-    contract=next((c for c in contracts if c['direction']=='call'),None)
+    contract=next((c for c in contracts if c['direction']==direction),None)
     if not contract:return blocked('BLOQUEADO_SEM_CONTRATO_5M_VALIDO')
-    instrument=next((i for i in trace.instruments if i['period']==300 and i['expiration']==contract['expiration_timestamp'] and any(d['symbol']==contract['symbol'] and d['direction']=='call' for d in i['symbols'])),None)
+    instrument=next((i for i in trace.instruments if i['period']==300 and i['expiration']==contract['expiration_timestamp'] and any(d['symbol']==contract['symbol'] and d['direction']==direction for d in i['symbols'])),None)
     if not instrument:return blocked('BLOQUEADO_INSTRUMENTO_NAO_CONFIRMADO')
     if instrument['expiration']-instrument['deadtime']-client.api.timesync.server_timestamp<15:return blocked('BLOQUEADO_VENCIMENTO_PROXIMO')
     # Recheck account immediately before the only write; never construct a contract ID.
@@ -325,7 +326,7 @@ def send_demo_test(client,take_profit_8=False):
     payload={'name':'digital-options.place-digital-option','version':'3.0','body':{
         'amount':'1','asset_id':trace.asset_id,'instrument_id':contract['symbol'],
         'instrument_index':int(instrument['index']),'user_balance_id':int(balance_id)}}
-    result={'order_status':'ENVIO_INCERTO_NAO_REPETIR','orders_sent':None,'order_attempted':True,'amount':1,'direction':'call','account':'PRACTICE','expiration_timestamp':instrument['expiration'],'early_sell_verified':False}
+    result={'order_status':'ENVIO_INCERTO_NAO_REPETIR','orders_sent':None,'order_attempted':True,'amount':1,'direction':direction,'account':'PRACTICE','expiration_timestamp':instrument['expiration'],'early_sell_verified':False}
     try:
         client.api.send_websocket_request('sendMessage',payload,request_id=trace.order_request_id)
         deadline=time.monotonic()+8
@@ -338,7 +339,7 @@ def send_demo_test(client,take_profit_8=False):
         pass
     return result
 
-def worker(queue, email, password, pair, test_order=False,take_profit_8=False):
+def worker(queue, email, password, pair, test_order=False,take_profit_8=False,direction="call"):
     # The old SDK may write authentication details on errors; suppress its logs.
     logging.disable(logging.CRITICAL)
     import contextlib
@@ -363,7 +364,7 @@ def worker(queue, email, password, pair, test_order=False,take_profit_8=False):
             result = inspect_client(client,pair,progress)
             if test_order:
                 progress('Validando conta e condições para uma ordem demonstrativa de 1 unidade')
-                result.update(send_demo_test(client,take_profit_8=take_profit_8))
+                result.update(send_demo_test(client,take_profit_8=take_profit_8,direction=direction))
                 if take_profit_8 and result.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
                     from profit_exit import monitor_profit
                     progress('Ordem confirmada; acompanhando recompra com alvo +8%')
