@@ -48,6 +48,7 @@ def job():
   'received_frames':ws.get('received_frames',0),
   'market_packet_count':len(ws.get('price_splitter_packets',[])),
   'event_counts':ws.get('event_counts',{}),
+  'market_request_responses':ws.get('subscription_responses',[]),
   'orders_sent':0}),flush=True)
  with lock:state.update(running=False,result=result)
 @app.post('/run')
