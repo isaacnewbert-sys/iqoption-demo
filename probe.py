@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v15-live-asset-resolver'
+VERSION = 'server-v16-instrument-compatibility'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -234,6 +234,15 @@ def inspect_client(client, pair, progress=lambda stage: None):
         request_id=trace.request_id+'-candles')
     lookup_deadline=time.monotonic()+8
     while (not trace.catalog_received or trace.catalog_match) and not trace.instruments_received and time.monotonic()<lookup_deadline:time.sleep(.1)
+    if trace.catalog_match and not trace.instruments_received:
+        progress('Consultando formato compatível de instrumentos digitais versão 1')
+        # Legacy primary source: ViniciosPsidonik/iq metatrader.js get-instruments v1.
+        client.api.send_websocket_request('sendMessage',{
+            'name':'digital-option-instruments.get-instruments','version':'1.0',
+            'body':{'instrument_type':'digital-option','asset_id':trace.asset_id}},
+            request_id=trace.request_id+'-instruments')
+        fallback_deadline=time.monotonic()+5
+        while not trace.instruments_received and time.monotonic()<fallback_deadline:time.sleep(.1)
     server_time=client.api.timesync.server_timestamp
     candidates=sorted([i for i in trace.instruments if i['period']==300 and 0<i['expiration']-server_time<=600 and i['expiration']-i['deadtime']>server_time],key=lambda i:i['expiration'])
     progress('Assinando preços pelo identificador do instrumento retornado pela IQ')
