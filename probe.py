@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v14-digital-catalogue'
+VERSION = 'server-v15-live-asset-resolver'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -220,8 +220,10 @@ def inspect_client(client, pair, progress=lambda stage: None):
     while not trace.catalog_received and time.monotonic()<catalogue_deadline:time.sleep(.1)
     # Resolve by exact requested name as well as ID; do not substitute OTC or another pair.
     named=next((a for a in trace.catalog_assets if a['name'].replace('/','')==pair),None)
+    if named is None:
+        named=next((a for a in trace.catalog_assets if a['name'].replace('/','')==pair+'-op'),None)
     if named:
-        trace.asset_id=named['active_id'];trace.catalog_match=named
+        trace.asset_id=named['active_id'];trace.pair=named['name'];trace.catalog_match=named
     if not trace.catalog_received or trace.catalog_match:
         client.api.send_websocket_request('sendMessage',{
             'name':'digital-option-instruments.get-instruments','version':'3.0',
@@ -247,7 +249,7 @@ def inspect_client(client, pair, progress=lambda stage: None):
         if contracts and len(trace.candles)>=2:break
         time.sleep(.1)
     contracts=verified_contracts(trace,client.api.timesync.server_timestamp)
-    return {'probe_version':VERSION,'account':'PRACTICE','login_confirmed':True,'pair':pair,
+    return {'probe_version':VERSION,'account':'PRACTICE','login_confirmed':True,'requested_pair':pair,'pair':trace.pair,
             'requested_duration_minutes':5,'orders_sent':0,'early_sell_verified':False,
             'contracts_verified':bool(contracts),'contracts':contracts,
             'underlying_price_received':bool(trace.candles),
