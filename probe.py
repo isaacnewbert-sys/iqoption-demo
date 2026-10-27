@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v13-instruments-v3'
+VERSION = 'server-v14-digital-catalogue'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -16,7 +16,7 @@ class WireTrace:
     # Keep only public-market packets and fixed diagnostic counters.
     # Never store profile, account balances, auth packets, tokens or error text.
     def __init__(self):
-        self.catalog_received=False; self.catalog_match=None; self.instruments_received=False; self.instruments=[]
+        self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
@@ -35,6 +35,7 @@ class WireTrace:
             rid=str(event.get('request_id',''))
             if rid==self.request_id+'-catalog' and isinstance(body,dict) and isinstance(body.get('underlying'),list):
                 self.catalog_received=True
+                self.catalog_assets=[{'active_id':r['active_id'],'name':r['name'],'is_suspended':r.get('is_suspended') if isinstance(r.get('is_suspended'),bool) else None} for r in body['underlying'] if isinstance(r,dict) and isinstance(r.get('active_id'),int) and isinstance(r.get('name'),str) and re.fullmatch(r'[A-Za-z0-9_/. -]{1,50}',r['name'])][:100]
                 for row in body['underlying']:
                     if isinstance(row,dict) and row.get('active_id')==self.asset_id:
                         self.catalog_match={'active_id':self.asset_id,'is_suspended':row.get('is_suspended') if isinstance(row.get('is_suspended'),bool) else None}
@@ -131,7 +132,7 @@ class WireTrace:
         except Exception:
             self.errors+=1
     def summary(self):
-        return {'catalog_received':self.catalog_received,'catalog_match':self.catalog_match,'instruments_received':self.instruments_received,'instruments':self.instruments,'event_counts':dict(self.event_counts),'underlying_updates':len(self.candles),'subscription_responses':self.subscription_responses,'price_splitter_packets':self.new_packets,'received_frames':self.frames,'market_packets_5m':len(self.quotes),'parser_exceptions':self.parser_errors,'websocket_errors':self.errors,'responses_seen':self.responses,'rejections_seen':self.rejections}
+        return {'catalog_received':self.catalog_received,'catalog_assets':self.catalog_assets,'catalog_match':self.catalog_match,'instruments_received':self.instruments_received,'instruments':self.instruments,'event_counts':dict(self.event_counts),'underlying_updates':len(self.candles),'subscription_responses':self.subscription_responses,'price_splitter_packets':self.new_packets,'received_frames':self.frames,'market_packets_5m':len(self.quotes),'parser_exceptions':self.parser_errors,'websocket_errors':self.errors,'responses_seen':self.responses,'rejections_seen':self.rejections}
 
 def install_compatibility(trace):
     from iqoptionapi.ws.client import WebsocketClient
@@ -215,15 +216,22 @@ def inspect_client(client, pair, progress=lambda stage: None):
     client.api.send_websocket_request('sendMessage',{
         'name':'digital-option-instruments.get-underlying-list','version':'3.0',
         'body':{'filter_suspended':True}},request_id=trace.request_id+'-catalog')
-    client.api.send_websocket_request('sendMessage',{
-        'name':'digital-option-instruments.get-instruments','version':'3.0',
-        'body':{'asset_id':trace.asset_id}},request_id=trace.request_id+'-instruments')
+    catalogue_deadline=time.monotonic()+5
+    while not trace.catalog_received and time.monotonic()<catalogue_deadline:time.sleep(.1)
+    # Resolve by exact requested name as well as ID; do not substitute OTC or another pair.
+    named=next((a for a in trace.catalog_assets if a['name'].replace('/','')==pair),None)
+    if named:
+        trace.asset_id=named['active_id'];trace.catalog_match=named
+    if not trace.catalog_received or trace.catalog_match:
+        client.api.send_websocket_request('sendMessage',{
+            'name':'digital-option-instruments.get-instruments','version':'3.0',
+            'body':{'asset_id':trace.asset_id}},request_id=trace.request_id+'-instruments')
     client.api.send_websocket_request('subscribeMessage',{
         'name':'candle-generated',
         'params':{'routingFilters':{'active_id':str(trace.asset_id),'size':60}}},
         request_id=trace.request_id+'-candles')
     lookup_deadline=time.monotonic()+8
-    while not trace.instruments_received and time.monotonic()<lookup_deadline:time.sleep(.1)
+    while (not trace.catalog_received or trace.catalog_match) and not trace.instruments_received and time.monotonic()<lookup_deadline:time.sleep(.1)
     server_time=client.api.timesync.server_timestamp
     candidates=sorted([i for i in trace.instruments if i['period']==300 and 0<i['expiration']-server_time<=600 and i['expiration']-i['deadtime']>server_time],key=lambda i:i['expiration'])
     progress('Assinando preços pelo identificador do instrumento retornado pela IQ')
@@ -243,7 +251,7 @@ def inspect_client(client, pair, progress=lambda stage: None):
             'requested_duration_minutes':5,'orders_sent':0,'early_sell_verified':False,
             'contracts_verified':bool(contracts),'contracts':contracts,
             'underlying_price_received':bool(trace.candles),
-            'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if contracts else 'CONTRATOS_5M_NAO_CONFIRMADOS',
+            'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if contracts else ('ATIVO_NAO_LISTADO_NO_CATALOGO_DIGITAL' if trace.catalog_received and not trace.catalog_match else 'CONTRATOS_5M_NAO_CONFIRMADOS'),
             'websocket':trace.summary()}
 
 def worker(queue, email, password, pair):
