@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v18-fast-diagnostics'
+VERSION = 'server-v20-market-instruments'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -16,7 +16,7 @@ class WireTrace:
     # Keep only public-market packets and fixed diagnostic counters.
     # Never store profile, account balances, auth packets, tokens or error text.
     def __init__(self):
-        self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]; self.instrument_schema=[]; self.instruments_raw_count=0
+        self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]; self.instrument_schema=[]; self.instruments_raw_count=0; self.subscription_acks={}
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
         self.order_request_id=None; self.order_reply=None; self.order_attempted=False
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
@@ -30,7 +30,7 @@ class WireTrace:
             if not isinstance(event,dict): return
             name=event.get('name'); body=event.get('msg')
             # Fixed vocabulary only; unknown event names and arbitrary payloads stay private.
-            known=('timeSync','heartbeat','result','error','subscription-result','candle-generated','candles-generated','client-price-generated','price-splitter.client-price-generated','instrument-quotes-generated','digital-option-client-price-generated','trading-settings.digital-option-client-price-generated','digital-option-instruments.underlying-list','digital-option-instruments.instruments')
+            known=('timeSync','heartbeat','result','error','subscription-result','candle-generated','candles-generated','client-price-generated','price-splitter.client-price-generated','instrument-quotes-generated','digital-option-client-price-generated','trading-settings.digital-option-client-price-generated','digital-option-instruments.underlying-list','digital-option-instruments.instruments','digital-option-instruments.instrument-generated','instrument-generated')
             label=name if name in known else 'other'
             self.event_counts[label]=self.event_counts.get(label,0)+1
             rid=str(event.get('request_id',''))
@@ -41,11 +41,15 @@ class WireTrace:
                     self.order_reply={'status':'ORDEM_DEMO_RECUSADA'}
             if rid==self.request_id+'-catalog' and isinstance(body,dict) and isinstance(body.get('underlying'),list):
                 self.catalog_received=True
-                self.catalog_assets=[{'active_id':r['active_id'],'name':r['name'],'is_suspended':r.get('is_suspended') if isinstance(r.get('is_suspended'),bool) else None} for r in body['underlying'] if isinstance(r,dict) and isinstance(r.get('active_id'),int) and isinstance(r.get('name'),str) and re.fullmatch(r'[A-Za-z0-9_/. -]{1,50}',r['name'])][:100]
+                self.catalog_assets=[{'active_id':r['active_id'],'name':r['name'],'is_suspended':r.get('is_suspended') if isinstance(r.get('is_suspended'),bool) else None} for r in body['underlying'] if isinstance(r,dict) and isinstance(r.get('active_id'),int) and isinstance(r.get('name'),str) and re.fullmatch(r'[A-Za-z0-9_/. -]{1,50}',r['name'])][:1000]
                 for row in body['underlying']:
                     if isinstance(row,dict) and row.get('active_id')==self.asset_id:
                         self.catalog_match={'active_id':self.asset_id,'is_suspended':row.get('is_suspended') if isinstance(row.get('is_suspended'),bool) else None}
-            if rid==self.request_id+'-instruments' and isinstance(body,dict) and isinstance(body.get('instruments'),list):
+            if isinstance(body,dict) and isinstance(body.get('success'),bool) and rid.startswith(self.request_id):
+                self.subscription_acks[rid]=body['success']
+            generated=name in ('digital-option-instruments.instrument-generated','instrument-generated') and isinstance(body,dict) and body.get('asset_id')==self.asset_id
+            if (rid==self.request_id+'-instruments' and isinstance(body,dict) and isinstance(body.get('instruments'),list)) or generated:
+                if generated:body={'instruments':[body]}
                 self.instruments_received=True
                 self.instruments_raw_count=len(body['instruments'])
                 self.instrument_schema=[{k:r[k] for k in ('asset_id','active_id','index','instrument_index','period','expiration','deadtime') if isinstance(r.get(k),(int,float)) and not isinstance(r.get(k),bool)} | {'fields_present':[k for k in ('asset_id','active_id','index','instrument_index','period','expiration','deadtime','instrument_type','data') if k in r],'type_is_digital':r.get('instrument_type')=='digital-option'} for r in body['instruments'][:6] if isinstance(r,dict)]
@@ -232,7 +236,16 @@ def inspect_client(client, pair, progress=lambda stage: None):
         named=next((a for a in trace.catalog_assets if a['name'].replace('/','')==pair+'-op'),None)
     if named:
         trace.asset_id=named['active_id'];trace.pair=named['name'];trace.catalog_match=named
+        # The pinned SDK constants predate -op assets; synchronize its parser with public catalogue IDs.
+        for asset in trace.catalog_assets:constants.ACTIVES[asset['name']]=asset['active_id']
     if not trace.catalog_received or trace.catalog_match:
+        # SDK v3 subscribes instrument generation BEFORE requesting current state.
+        progress('Assinando geração dos instrumentos digitais do ativo selecionado')
+        client.api.send_websocket_request('subscribeMessage',{
+            'name':'digital-option-instruments.instrument-generated','version':'3.0',
+            'params':{'routingFilters':{'asset_id':trace.asset_id}}},request_id=trace.request_id+'-generated')
+        ack_deadline=time.monotonic()+2
+        while trace.request_id+'-generated' not in trace.subscription_acks and time.monotonic()<ack_deadline:time.sleep(.05)
         client.api.send_websocket_request('sendMessage',{
             'name':'digital-option-instruments.get-instruments','version':'3.0',
             'body':{'asset_id':trace.asset_id}},request_id=trace.request_id+'-instruments')
