@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v20-market-instruments'
+VERSION = 'server-v21-profit-exit-8'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -18,7 +18,7 @@ class WireTrace:
     def __init__(self):
         self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]; self.instrument_schema=[]; self.instruments_raw_count=0; self.subscription_acks={}
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
-        self.order_request_id=None; self.order_reply=None; self.order_attempted=False
+        self.profit_tracker=None; self.order_request_id=None; self.order_reply=None; self.order_attempted=False
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
         self.new_packets=[]; self.secrets=[]; self.subscription_responses=[]; self.request_id="spotlab-readonly-digital-5m"
@@ -28,6 +28,7 @@ class WireTrace:
         try:
             event=json.loads(payload) if isinstance(payload,(str,bytes,bytearray)) else payload
             if not isinstance(event,dict): return
+            if self.profit_tracker:self.profit_tracker.receive(event)
             name=event.get('name'); body=event.get('msg')
             # Fixed vocabulary only; unknown event names and arbitrary payloads stay private.
             known=('timeSync','heartbeat','result','error','subscription-result','candle-generated','candles-generated','client-price-generated','price-splitter.client-price-generated','instrument-quotes-generated','digital-option-client-price-generated','trading-settings.digital-option-client-price-generated','digital-option-instruments.underlying-list','digital-option-instruments.instruments','digital-option-instruments.instrument-generated','instrument-generated')
@@ -286,7 +287,7 @@ def inspect_client(client, pair, progress=lambda stage: None):
             'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if contracts else ('ATIVO_NAO_LISTADO_NO_CATALOGO_DIGITAL' if trace.catalog_received and not trace.catalog_match else 'CONTRATOS_5M_NAO_CONFIRMADOS'),
             'websocket':trace.summary()}
 
-def send_demo_test(client):
+def send_demo_test(client,take_profit_8=False):
     """One fixed-size demo CALL. Never retry an uncertain submission."""
     trace=client.trace
     blocked=lambda reason:{'order_status':reason,'orders_sent':0,'order_attempted':False}
@@ -296,6 +297,9 @@ def send_demo_test(client):
     profile=client.get_profile_ansyc()
     balance=next((b for b in profile.get('balances',[]) if b.get('id')==balance_id and b.get('type')==4),None)
     if not balance:return blocked('BLOQUEADO_SALDO_DEMO_NAO_CONFIRMADO')
+    if take_profit_8:
+        from profit_exit import prepare_tracking
+        if not prepare_tracking(client):return blocked('BLOQUEADO_MONITOR_LUCRO_NAO_CONFIRMADO')
     # Bound the SDK's normally unbounded position lookup. Unknown schema blocks sending.
     client.api.positions=None
     client.api.get_positions('digital-option')
@@ -334,7 +338,7 @@ def send_demo_test(client):
         pass
     return result
 
-def worker(queue, email, password, pair, test_order=False):
+def worker(queue, email, password, pair, test_order=False,take_profit_8=False):
     # The old SDK may write authentication details on errors; suppress its logs.
     logging.disable(logging.CRITICAL)
     import contextlib
@@ -359,7 +363,11 @@ def worker(queue, email, password, pair, test_order=False):
             result = inspect_client(client,pair,progress)
             if test_order:
                 progress('Validando conta e condições para uma ordem demonstrativa de 1 unidade')
-                result.update(send_demo_test(client))
+                result.update(send_demo_test(client,take_profit_8=take_profit_8))
+                if take_profit_8 and result.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
+                    from profit_exit import monitor_profit
+                    progress('Ordem confirmada; acompanhando recompra com alvo +8%')
+                    result.update(monitor_profit(client,result,progress,lambda update:queue.put({'trade_update':update})))
         queue.put(result)
     except Exception as error:
         # Do not print exception contents: SDK may embed credentials or account IDs.
