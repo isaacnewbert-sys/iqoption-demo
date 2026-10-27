@@ -15,9 +15,9 @@ def protect():
 def headers(r):
  r.headers['Cache-Control']='no-store';r.headers['X-Content-Type-Options']='nosniff';r.headers['X-Frame-Options']='DENY';r.headers['Referrer-Policy']='no-referrer';return r
 @app.get('/health')
-def health():return {'ok':True,'orders_enabled':False}
+def health():return {'ok':True,'orders_enabled':False,'probe_version':'server-v12-asset-stream'}
 @app.get('/')
-def index():return '''<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>IQ Demo</title><style>body{font:16px system-ui;background:#0a1524;color:#e5edf7;max-width:750px;margin:auto;padding:24px}button{padding:16px;background:#27c89c;border:0;border-radius:10px;font:inherit}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#15263d;padding:18px;border-radius:12px}</style><h1>IQ Demo · servidor</h1><p>Conta demonstrativa. Ordens desativadas. Conexão e preços ainda em validação.</p><p>EUR/USD Digital · grade de vencimentos de 5 minutos · objetivo futuro de saída +8%, sem stop por perda.</p><button onclick="run()">Testar conexão e contratos</button><p id="status"></p><pre id="out">Aguardando teste.</pre><p>Credenciais IQ Option somente nas variáveis protegidas do Render. Não são solicitadas nesta página. Resultados temporários são perdidos ao reiniciar. Hospedagem gratuita pode suspender por inatividade; não serve para operação contínua.</p><script>async function refresh(){try{let r=await fetch('/status');if(!r.ok)return;let s=await r.json();document.getElementById('status').textContent=s.running?'Teste em andamento…':'Teste parado';document.getElementById('out').textContent=JSON.stringify(s.result,null,2)}catch{}}async function run(){let r=await fetch('/run',{method:'POST',headers:{'X-Demo-Panel':'1'}});if(!r.ok)document.getElementById('status').textContent=await r.text();refresh()}setInterval(refresh,3000);refresh()</script></html>'''
+def index():return '''<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>IQ Demo</title><style>body{font:16px system-ui;background:#0a1524;color:#e5edf7;max-width:750px;margin:auto;padding:24px}button{padding:16px;background:#27c89c;border:0;border-radius:10px;font:inherit}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#15263d;padding:18px;border-radius:12px}</style><h1>IQ Demo · servidor</h1><p>Conector v12 · teste inicial automático ao iniciar o servidor.</p><p>Conta demonstrativa. Ordens desativadas. Conexão e preços ainda em validação.</p><p>EUR/USD Digital · grade de vencimentos de 5 minutos · objetivo futuro de saída +8%, sem stop por perda.</p><button onclick="run()">Testar conexão e contratos</button><p id="status"></p><pre id="out">Aguardando teste.</pre><p>Credenciais IQ Option somente nas variáveis protegidas do Render. Não são solicitadas nesta página. Resultados temporários são perdidos ao reiniciar. Hospedagem gratuita pode suspender por inatividade; não serve para operação contínua.</p><script>async function refresh(){try{let r=await fetch('/status');if(!r.ok)return;let s=await r.json();document.getElementById('status').textContent=s.running?'Teste em andamento…':'Teste parado';document.getElementById('out').textContent=JSON.stringify(s.result,null,2)}catch{}}async function run(){let r=await fetch('/run',{method:'POST',headers:{'X-Demo-Panel':'1'}});if(!r.ok)document.getElementById('status').textContent=await r.text();refresh()}setInterval(refresh,3000);refresh()</script></html>'''
 @app.get('/status')
 def status():
  with lock:return jsonify(dict(state))
@@ -27,6 +27,19 @@ def job():
   result=json.loads(p.stdout) if p.returncode==0 else {'error':'Processo interrompido. Nenhuma ordem enviada.'}
  except subprocess.TimeoutExpired:result={'error':'Tempo limite de 65 segundos. Processo encerrado. Nenhuma ordem enviada.'}
  except Exception:result={'error':'Falha no diagnóstico; detalhes omitidos para preservar credenciais.'}
+ # Emit fixed diagnostic fields only; never credentials, auth payloads or raw errors.
+ inner=result.get('result',{}) if isinstance(result,dict) else {}
+ ws=inner.get('websocket',{})
+ print('IQ_DEMO_DIAGNOSTIC '+json.dumps({
+  'probe_version':inner.get('probe_version','server-v12-asset-stream'),
+  'status':inner.get('status','DIAGNOSTICO_INTERROMPIDO'),
+  'login_confirmed':inner.get('login_confirmed',False),
+  'contracts_verified':inner.get('contracts_verified',False),
+  'underlying_price_received':inner.get('underlying_price_received',False),
+  'received_frames':ws.get('received_frames',0),
+  'market_packet_count':len(ws.get('price_splitter_packets',[])),
+  'event_counts':ws.get('event_counts',{}),
+  'orders_sent':0}),flush=True)
  with lock:state.update(running=False,result=result)
 @app.post('/run')
 def run():
@@ -35,3 +48,8 @@ def run():
   if state['running']:return Response('Já existe um teste em andamento.',409)
   state.update(running=True,result=None)
  threading.Thread(target=job,daemon=True).start();return {'started':True,'orders_enabled':False},202
+
+# Single-worker deployment: one read-only probe per server start when configured.
+if all(os.environ.get(k) for k in ('PANEL_PASSWORD','IQ_EMAIL','IQ_PASSWORD')):
+ state.update(running=True,result=None)
+ threading.Thread(target=job,daemon=True).start()
