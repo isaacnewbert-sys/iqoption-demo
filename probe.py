@@ -16,7 +16,7 @@ class WireTrace:
     # Keep only public-market packets and fixed diagnostic counters.
     # Never store profile, account balances, auth packets, tokens or error text.
     def __init__(self):
-        self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]
+        self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]; self.instrument_schema=[]; self.instruments_raw_count=0
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
@@ -41,6 +41,8 @@ class WireTrace:
                         self.catalog_match={'active_id':self.asset_id,'is_suspended':row.get('is_suspended') if isinstance(row.get('is_suspended'),bool) else None}
             if rid==self.request_id+'-instruments' and isinstance(body,dict) and isinstance(body.get('instruments'),list):
                 self.instruments_received=True
+                self.instruments_raw_count=len(body['instruments'])
+                self.instrument_schema=[{k:r[k] for k in ('asset_id','active_id','index','instrument_index','period','expiration','deadtime') if isinstance(r.get(k),(int,float)) and not isinstance(r.get(k),bool)} | {'fields_present':[k for k in ('asset_id','active_id','index','instrument_index','period','expiration','deadtime','instrument_type','data') if k in r],'type_is_digital':r.get('instrument_type')=='digital-option'} for r in body['instruments'][:6] if isinstance(r,dict)]
                 for row in body['instruments']:
                     if not isinstance(row,dict) or row.get('asset_id')!=self.asset_id or row.get('instrument_type')!='digital-option':continue
                     fields=('asset_id','index','period','expiration','deadtime')
@@ -132,7 +134,7 @@ class WireTrace:
         except Exception:
             self.errors+=1
     def summary(self):
-        return {'catalog_received':self.catalog_received,'catalog_assets':self.catalog_assets,'catalog_match':self.catalog_match,'instruments_received':self.instruments_received,'instruments':self.instruments,'event_counts':dict(self.event_counts),'underlying_updates':len(self.candles),'subscription_responses':self.subscription_responses,'price_splitter_packets':self.new_packets,'received_frames':self.frames,'market_packets_5m':len(self.quotes),'parser_exceptions':self.parser_errors,'websocket_errors':self.errors,'responses_seen':self.responses,'rejections_seen':self.rejections}
+        return {'catalog_received':self.catalog_received,'catalog_assets':self.catalog_assets,'catalog_match':self.catalog_match,'instruments_received':self.instruments_received,'instruments_raw_count':self.instruments_raw_count,'instrument_schema':self.instrument_schema,'instruments':self.instruments,'event_counts':dict(self.event_counts),'underlying_updates':len(self.candles),'subscription_responses':self.subscription_responses,'price_splitter_packets':self.new_packets,'received_frames':self.frames,'market_packets_5m':len(self.quotes),'parser_exceptions':self.parser_errors,'websocket_errors':self.errors,'responses_seen':self.responses,'rejections_seen':self.rejections}
 
 def install_compatibility(trace):
     from iqoptionapi.ws.client import WebsocketClient
