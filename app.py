@@ -1,10 +1,45 @@
-import os,secrets,threading,subprocess,sys,json,time,queue
+import os,secrets,threading,subprocess,sys,json,time,queue,sqlite3,uuid
 from flask import Flask,request,Response,jsonify
 from probe import VERSION
 app=Flask(__name__)
 state={'stage':'Aguardando teste','started_at':None,'running':False,'result':None,'demo_test_orders_enabled':True,'real_orders_enabled':False}
 HOLD_FILE='/tmp/iq-demo-test-hold.json'
+STATE_DB='/tmp/iq-demo-state-v19.sqlite3'
 lock=threading.Lock()
+def state_transaction(change=None):
+ # One authoritative state for HTTP and background tasks, even after module reload.
+ with sqlite3.connect(STATE_DB,timeout=2) as db:
+  db.execute('CREATE TABLE IF NOT EXISTS panel (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)')
+  db.execute('BEGIN IMMEDIATE')
+  row=db.execute('SELECT payload FROM panel WHERE id=1').fetchone()
+  current=json.loads(row[0]) if row else dict(state)
+  if change is not None:change(current)
+  db.execute('INSERT OR REPLACE INTO panel VALUES(1,?)',(json.dumps(current),))
+ return current
+
+def snapshot():
+ def reap(current):
+  # Only read-only diagnostics can be released by a stale-state watchdog.
+  # Demo submissions keep their uncertainty lock and never retry automatically.
+  if current.get('running') and not current.get('test_order') and time.time()-current.get('started_at',time.time())>40:
+   current.update(running=False,job_id=None,stage='Tempo limite',result={'error':'O diagnóstico excedeu 35 segundos. Atualize o teste de conexão; nenhuma ordem foi solicitada.'})
+ current=state_transaction(reap)
+ current['elapsed_seconds']=max(0,int(time.time()-current['started_at'])) if current.get('started_at') and current.get('running') else 0
+ return current
+
+def begin_job(test_order=False):
+ token=uuid.uuid4().hex
+ def claim(current):
+  if current.get('running'):raise RuntimeError('busy')
+  current.update(running=True,result=None,stage='Iniciando conexão',started_at=time.time(),test_order=test_order,job_id=token)
+ state_transaction(claim)
+ return token
+
+def update_job(token,**values):
+ def change(current):
+  if current.get('job_id')==token:current.update(values)
+ state_transaction(change)
+
 @app.before_request
 def protect():
  if request.path=='/health':return
@@ -17,13 +52,15 @@ def protect():
 def headers(r):
  r.headers['Cache-Control']='no-store';r.headers['X-Content-Type-Options']='nosniff';r.headers['X-Frame-Options']='DENY';r.headers['Referrer-Policy']='no-referrer';return r
 @app.get('/health')
-def health():return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_TEST_ONLY','demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'diagnostic_running':state['running'],'diagnostic_completed':state['result'] is not None}
+def health():
+ current=snapshot()
+ return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_TEST_ONLY','demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v19-shared-state','diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
 @app.get('/')
-def index():return '''<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>IQ Demo</title><style>body{font:16px system-ui;background:#0a1524;color:#e5edf7;max-width:750px;margin:auto;padding:24px}button{padding:16px;background:#27c89c;border:0;border-radius:10px;font:inherit}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#15263d;padding:18px;border-radius:12px}</style><h1>IQ Demo · servidor</h1><p>Conector catálogo v3 · teste inicial automático ao iniciar o servidor.</p><p>Teste de ordem habilitado somente na conta PRACTICE. Envio depende de contrato e cotações válidas. Conta real desativada.</p><p>EUR/USD Digital · grade de vencimentos de 5 minutos · objetivo futuro de saída +8%, sem stop por perda.</p><button onclick="run()">Testar conexão e contratos</button><p><button onclick="demoOrder()">Enviar 1 CALL de teste · saldo virtual</button></p><p>Teste de execução: 1 unidade do saldo virtual, grade de 5 minutos. Sem sinal de estratégia. A operação permanece até o vencimento; saída +8% ainda indisponível. Não repita se o envio ficar incerto.</p><p id="status"></p><pre id="out">Aguardando teste.</pre><p>Credenciais IQ Option somente nas variáveis protegidas do Render. Não são solicitadas nesta página. Resultados temporários são perdidos ao reiniciar. Hospedagem gratuita pode suspender por inatividade; não serve para operação contínua.</p><script>async function refresh(){try{let r=await fetch('/status');if(!r.ok)return;let s=await r.json();document.querySelectorAll('button').forEach(b=>b.disabled=s.running);let elapsed=s.started_at?Math.max(0,Math.floor(Date.now()/1000-s.started_at)):0;document.getElementById('status').textContent=s.running?(s.stage+' · '+elapsed+' s'):'Teste concluído';document.getElementById('out').textContent=JSON.stringify(s.result,null,2)}catch{}}async function demoOrder(){let r=await fetch('/demo-order',{method:'POST',headers:{'X-Demo-Panel':'1'}});if(!r.ok)document.getElementById('status').textContent=await r.text();else refresh()}async function run(){let r=await fetch('/run',{method:'POST',headers:{'X-Demo-Panel':'1'}});if(!r.ok)document.getElementById('status').textContent=await r.text();refresh()}setInterval(refresh,1000);refresh()</script></html>'''
+def index():return '''<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>IQ Demo</title><style>body{font:16px system-ui;background:#0a1524;color:#e5edf7;max-width:750px;margin:auto;padding:24px}button{padding:16px;background:#27c89c;border:0;border-radius:10px;font:inherit}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#15263d;padding:18px;border-radius:12px}</style><h1>IQ Demo · servidor</h1><p>Painel v19 · catálogo v3 · clique para iniciar o teste.</p><p>Teste de ordem habilitado somente na conta PRACTICE. Envio depende de contrato e cotações válidas. Conta real desativada.</p><p>EUR/USD Digital · grade de vencimentos de 5 minutos · objetivo futuro de saída +8%, sem stop por perda.</p><button onclick="run()">Testar conexão e contratos</button><p><button onclick="demoOrder()">Enviar 1 CALL de teste · saldo virtual</button></p><p>Teste de execução: 1 unidade do saldo virtual, grade de 5 minutos. Sem sinal de estratégia. A operação permanece até o vencimento; saída +8% ainda indisponível. Não repita se o envio ficar incerto.</p><p id="status"></p><pre id="out">Aguardando teste.</pre><p>Credenciais IQ Option somente nas variáveis protegidas do Render. Não são solicitadas nesta página. Resultados temporários são perdidos ao reiniciar. Hospedagem gratuita pode suspender por inatividade; não serve para operação contínua.</p><script>let refreshing=false;async function refresh(){if(refreshing)return;refreshing=true;try{let r=await fetch('/status',{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!r.ok)return;let s=await r.json();document.querySelectorAll('button').forEach(b=>b.disabled=s.running);let elapsed=s.elapsed_seconds||0;document.getElementById('status').textContent=s.running?(s.stage+' · '+elapsed+' s'):(s.result?'Teste concluído':'Pronto para testar');document.getElementById('out').textContent=s.result?JSON.stringify(s.result,null,2):'Clique em Testar conexão e contratos.'}catch{document.getElementById('status').textContent='Sem resposta do servidor. Reconectando…'}finally{refreshing=false}}async function demoOrder(){let r=await fetch('/demo-order',{method:'POST',headers:{'X-Demo-Panel':'1'}});if(!r.ok)document.getElementById('status').textContent=await r.text();else refresh()}async function run(){let r=await fetch('/run',{method:'POST',headers:{'X-Demo-Panel':'1'}});if(!r.ok)document.getElementById('status').textContent=await r.text();refresh()}setInterval(refresh,1000);refresh()</script></html>'''
 @app.get('/status')
 def status():
- with lock:return jsonify(dict(state))
-def run_process(args,timeout):
+ return jsonify(snapshot())
+def run_process(args,timeout,job_id=None):
  """Stream only structured progress; kill the SDK child on the wall-clock deadline."""
  p=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1)
  lines=queue.Queue()
@@ -44,7 +81,8 @@ def run_process(args,timeout):
    try:message=json.loads(line)
    except (ValueError,TypeError):continue
    if isinstance(message,dict) and isinstance(message.get('progress'),str):
-    with lock:state['stage']=message['progress'][:200]
+    if job_id:update_job(job_id,stage=message['progress'][:200])
+    else:state['stage']=message['progress'][:200]
    elif isinstance(message,dict) and 'result' in message:result=message
   p.wait(timeout=max(.01,deadline-time.monotonic()))
   if p.returncode!=0 or result is None:return {'error':'Processo interrompido; resultado não confirmado.'}
@@ -55,17 +93,19 @@ def run_process(args,timeout):
   except subprocess.TimeoutExpired:pass
   if p.stdout:p.stdout.close()
 
-def job(test_order=False):
- print('IQ_DEMO_START '+VERSION,flush=True)
+def job(test_order=False,job_id=None):
  try:
   args=[sys.executable,'runner.py']+(['--demo-test-order'] if test_order else [])
-  result=run_process(args,65 if test_order else 35)
+  result=run_process(args,65 if test_order else 35,job_id)
  except subprocess.TimeoutExpired:
-  with lock:last_stage=state['stage']
+  last_stage=snapshot()['stage']
   result={'error':'Tempo limite de '+str(65 if test_order else 35)+' segundos na etapa: '+last_stage+'. Processo encerrado.'}
  except Exception:result={'error':'Falha no diagnóstico; detalhes omitidos para preservar credenciais.'}
  if test_order and 'error' in result:
   result.update(error='Não foi possível confirmar o resultado. Confira a conta PRACTICE antes de repetir.',order_status='ENVIO_INCERTO_NAO_REPETIR',orders_sent=None)
+ # Publish completion BEFORE writing logs, which may be slow or unavailable.
+ if job_id:update_job(job_id,running=False,result=result,stage='Concluído')
+ else:state.update(running=False,result=result,stage='Concluído')
  # Emit fixed diagnostic fields only; never credentials, auth payloads or raw errors.
  inner=result.get('result',{}) if isinstance(result,dict) else {}
  ws=inner.get('websocket',{})
@@ -91,20 +131,21 @@ def job(test_order=False):
   'orders_sent':inner.get('orders_sent'),
   'order_status':inner.get('order_status',result.get('order_status')),
   'order_id':inner.get('order_id')}),flush=True)
- with lock:state.update(running=False,result=result,stage='Concluído')
+
 @app.post('/run')
 def run():
  if not os.environ.get('IQ_EMAIL') or not os.environ.get('IQ_PASSWORD'):return Response('Configure IQ_EMAIL e IQ_PASSWORD no Render.',409)
  with lock:
-  if state['running']:return Response('Já existe um teste em andamento.',409)
-  state.update(running=True,result=None,stage='Iniciando conexão',started_at=time.time())
- threading.Thread(target=job,daemon=True).start();return {'started':True,'orders_enabled':False},202
+  snapshot()
+  try:token=begin_job(False)
+  except RuntimeError:return Response('Já existe um teste em andamento.',409)
+ threading.Thread(target=job,args=(False,token),daemon=True).start();return {'started':True,'orders_enabled':False},202
 
 @app.post('/demo-order')
 def demo_order():
  if not all(os.environ.get(k) for k in ('IQ_EMAIL','IQ_PASSWORD')):return Response('Configure as credenciais no Render.',409)
  with lock:
-  if state['running']:return Response('Aguarde a conclusão do teste em andamento.',409)
+  if snapshot()['running']:return Response('Aguarde a conclusão do teste em andamento.',409)
   try:
    with open(HOLD_FILE) as f:hold=json.load(f).get('until',0)
   except FileNotFoundError:hold=0
@@ -113,13 +154,9 @@ def demo_order():
   # Hold is committed BEFORE launching, including for transport errors and lost acknowledgements.
   with open(HOLD_FILE+'.new','w') as f:json.dump({'until':time.time()+660},f)
   os.replace(HOLD_FILE+'.new',HOLD_FILE)
-  state.update(running=True,result=None,stage='Iniciando conexão',started_at=time.time())
- threading.Thread(target=job,args=(True,),daemon=True).start()
+  try:token=begin_job(True)
+  except RuntimeError:return Response('Já existe um teste em andamento.',409)
+ threading.Thread(target=job,args=(True,token),daemon=True).start()
  return {'started':True,'account':'PRACTICE','amount':1,'direction':'call','real_orders_enabled':False},202
 
-# Single-worker deployment: one read-only probe per server start when configured.
-if all(os.environ.get(k) for k in ('PANEL_PASSWORD','IQ_EMAIL','IQ_PASSWORD')):
- state.update(running=True,result=None,stage='Iniciando conexão',started_at=time.time())
- threading.Thread(target=job,daemon=True).start()
-else:
- print('IQ_DEMO_SETUP_INCOMPLETE missing_keys='+','.join(k for k in ('PANEL_PASSWORD','IQ_EMAIL','IQ_PASSWORD') if not os.environ.get(k)),flush=True)
+# Opening the panel never starts a connection or an order.
