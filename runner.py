@@ -1,6 +1,11 @@
 import os,queue,json,sys
 from probe import worker
-q=queue.Queue()
+class ProgressQueue(queue.Queue):
+ def put(self,message,*args,**kwargs):
+  if 'progress' in message:
+   os.write(1,(json.dumps({'progress':message['progress']},ensure_ascii=False)+'\n').encode('utf-8'))
+  return super().put(message,*args,**kwargs)
+q=ProgressQueue()
 test_order=len(sys.argv)==2 and sys.argv[1]=='--demo-test-order'
 worker(q,os.environ['IQ_EMAIL'],os.environ['IQ_PASSWORD'],'EURUSD',test_order=test_order)
 messages=[]
