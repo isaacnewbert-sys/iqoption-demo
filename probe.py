@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'Pydroid-v11-leitura-call-put'
+VERSION = 'server-v12-asset-stream'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -16,6 +16,7 @@ class WireTrace:
     # Keep only public-market packets and fixed diagnostic counters.
     # Never store profile, account balances, auth packets, tokens or error text.
     def __init__(self):
+        self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
         self.new_packets=[]; self.secrets=[]; self.subscription_responses=[]; self.request_id="spotlab-readonly-digital-5m"
@@ -26,7 +27,18 @@ class WireTrace:
             event=json.loads(payload) if isinstance(payload,(str,bytes,bytearray)) else payload
             if not isinstance(event,dict): return
             name=event.get('name'); body=event.get('msg')
-            if name in ('price-splitter.client-price-generated','client-price-generated') and isinstance(body,dict):
+            # Fixed vocabulary only; unknown event names and arbitrary payloads stay private.
+            known=('timeSync','heartbeat','result','error','subscription-result','candle-generated','candles-generated','client-price-generated','price-splitter.client-price-generated','instrument-quotes-generated')
+            label=name if name in known else 'other'
+            self.event_counts[label]=self.event_counts.get(label,0)+1
+            if name=='candle-generated' and isinstance(body,dict) and body.get('active_id')==self.asset_id:
+                import math
+                close=body.get('close')
+                if isinstance(close,(int,float)) and not isinstance(close,bool) and math.isfinite(close) and close>0:
+                    self.candles.append({'close':close,'received_at':time.monotonic()})
+                    self.candles=self.candles[-5:]
+
+            if name in ('price-splitter.client-price-generated','client-price-generated') and isinstance(body,dict) and body.get('asset_id')==self.asset_id:
                 # Public market event metadata only; no raw account payloads.
                 row={k:body[k] for k in ('asset_id','active_id','expiration_period','instrument_index','timestamp') if isinstance(body.get(k),(int,float))}
                 row['fields']=[k for k in ('asset_id','active_id','expiration_period','instrument_index','timestamp','price','prices','quotes','symbols','expiration','instrument_type') if k in body]
@@ -48,12 +60,13 @@ class WireTrace:
                             except (ValueError,TypeError):pass
                         contracts.append(contract)
                 row['spot_contracts_5m']=contracts
+                row['received_at_monotonic']=time.monotonic()
                 self.new_packets.append(row);self.new_packets=self.new_packets[-5:]
 
 
             # Correlate ONLY our market-data request. Never dump server payloads.
-            if str(event.get('request_id',''))==self.request_id:
-                info={'event':name if name in ('result','error','subscription-result') else 'other'}
+            if str(event.get('request_id','')) in (self.request_id,self.request_id+'-candles'):
+                info={'channel':'candles' if str(event.get('request_id','')).endswith('-candles') else 'digital', 'event':name if name in ('result','error','subscription-result') else 'other'}
                 if isinstance(body,dict):
                     info['success']=body.get('success') if isinstance(body.get('success'),bool) else None
                     status=body.get('status')
@@ -101,7 +114,7 @@ class WireTrace:
         except Exception:
             self.errors+=1
     def summary(self):
-        return {'subscription_responses':self.subscription_responses,'price_splitter_packets':self.new_packets,'received_frames':self.frames,'market_packets_5m':len(self.quotes),'parser_exceptions':self.parser_errors,'websocket_errors':self.errors,'responses_seen':self.responses,'rejections_seen':self.rejections}
+        return {'event_counts':dict(self.event_counts),'underlying_updates':len(self.candles),'subscription_responses':self.subscription_responses,'price_splitter_packets':self.new_packets,'received_frames':self.frames,'market_packets_5m':len(self.quotes),'parser_exceptions':self.parser_errors,'websocket_errors':self.errors,'responses_seen':self.responses,'rejections_seen':self.rejections}
 
 def install_compatibility(trace):
     from iqoptionapi.ws.client import WebsocketClient
@@ -126,26 +139,77 @@ def install_compatibility(trace):
     WebsocketClient.on_error=staticmethod(on_error)
     WebsocketClient.on_close=staticmethod(on_close)
 
+def verified_contracts(trace, server_time):
+    """Require both current 5m directions, correct asset, finite executable quotes.
+
+    This validates market data only; never authorizes or sends an order.
+    """
+    import math
+    from datetime import datetime, timezone
+    if not isinstance(server_time,(int,float)) or not math.isfinite(server_time): return []
+    for packet in reversed(trace.new_packets):
+        if packet.get('asset_id')!=trace.asset_id: continue
+        if time.monotonic()-packet.get('received_at_monotonic',0)>5: continue
+        valid=[]
+        for contract in packet.get('spot_contracts_5m',[]):
+            symbol=contract.get('symbol','')
+            direction=contract.get('direction')
+            letter={'call':'C','put':'P'}.get(direction)
+            # Formats observed in the community SDK: numeric asset and legacy pair.
+            modern=re.fullmatch(r'do(\d+)A(\d{8})D(\d{6})T5M([CP])SPT',symbol)
+            legacy=re.fullmatch(r'do([A-Za-z0-9_-]+?)(\d{12})PT5M([CP])SPT',symbol)
+            try:
+                if modern and int(modern[1])==trace.asset_id and modern[4]==letter:
+                    expiry=datetime.strptime(modern[2]+modern[3],'%Y%m%d%H%M%S').replace(tzinfo=timezone.utc).timestamp()
+                elif legacy and legacy[1]==trace.pair and legacy[3]==letter:
+                    expiry=datetime.strptime(legacy[2],'%Y%m%d%H%M').replace(tzinfo=timezone.utc).timestamp()
+                else: continue
+            except ValueError: continue
+            # Use IQ server time, not the phone clock. Do not fabricate expiry IDs.
+            if not 0<expiry-server_time<=600: continue
+            ask=contract.get('ask'); bid=contract.get('bid')
+            if not all(isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) for v in (ask,bid)):continue
+            if not 0<ask<=100 or not 0<=bid<=ask:continue
+            valid.append(dict(contract,expiration_timestamp=expiry))
+        if {c['direction'] for c in valid}=={'call','put'} and len({c['expiration_timestamp'] for c in valid})==1:
+            return valid
+    return []
+
 def inspect_client(client, pair, progress=lambda stage: None):
     progress("Selecionando conta PRACTICE")
     client.change_balance('PRACTICE')
     progress("Confirmando conta PRACTICE")
     if client.get_balance_mode() != 'PRACTICE':
         raise RuntimeError('Conta demonstrativa não confirmada; interrompido.')
-    progress('Assinando canal alternativo price-splitter para digitais de 5 minutos')
     import iqoptionapi.constants as constants
+    trace=client.trace
+    trace.asset_id=int(constants.ACTIVES[pair]);trace.pair=pair
+    trace.event_counts={};trace.started_at=time.monotonic()
+    progress('Assinando preços digitais pelo ativo; selecionando 5 minutos nos contratos recebidos')
+    # CassDs/iqoptionapi SubscribeDigitalPriceSplitter: asset filter only.
+    # expiration_period can silently over-filter this channel. Do not invent instrument_index.
     client.api.send_websocket_request('subscribeMessage',{
         'name':'price-splitter.client-price-generated','version':'1.0',
-        'params':{'routingFilters':{'instrument_type':'digital-option',
-                  'expiration_period':300,'asset_id':int(constants.ACTIVES[pair])}}},
-        request_id=client.trace.request_id)
+        'params':{'routingFilters':{'instrument_type':'digital-option','asset_id':trace.asset_id}}},
+        request_id=trace.request_id)
+    progress('Conferindo também atualizações do preço EUR/USD, separadas dos contratos digitais')
+    client.api.send_websocket_request('subscribeMessage',{
+        'name':'candle-generated',
+        'params':{'routingFilters':{'active_id':str(trace.asset_id),'size':60}}},
+        request_id=trace.request_id+'-candles')
     deadline=time.monotonic()+20
-    while not any(p.get('spot_contracts_5m') for p in client.trace.new_packets) and time.monotonic()<deadline:
+    contracts=[]
+    while time.monotonic()<deadline:
+        contracts=verified_contracts(trace,client.api.timesync.server_timestamp)
+        if contracts and len(trace.candles)>=2:break
         time.sleep(.1)
-    return {'account':'PRACTICE','login_confirmed':True,'pair':pair,
+    contracts=verified_contracts(trace,client.api.timesync.server_timestamp)
+    return {'probe_version':VERSION,'account':'PRACTICE','login_confirmed':True,'pair':pair,
             'requested_duration_minutes':5,'orders_sent':0,'early_sell_verified':False,
-            'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if any(p.get('spot_contracts_5m') for p in client.trace.new_packets) else 'CONTRATOS_5M_NAO_CONFIRMADOS',
-            'websocket':client.trace.summary()}
+            'contracts_verified':bool(contracts),'contracts':contracts,
+            'underlying_price_received':bool(trace.candles),
+            'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if contracts else 'CONTRATOS_5M_NAO_CONFIRMADOS',
+            'websocket':trace.summary()}
 
 def worker(queue, email, password, pair):
     # The old SDK may write authentication details on errors; suppress its logs.
