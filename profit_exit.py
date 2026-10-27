@@ -27,7 +27,8 @@ class ProfitTracker:
         raw=raw.get('digital_options_position_changed1',raw) if isinstance(raw,dict) else {}
         ids=raw.get('order_ids',row.get('order_ids',[])) if isinstance(raw,dict) else row.get('order_ids',[])
         # Do not assume order_id is the external position ID.
-        if not isinstance(ids,list) or self.order_id not in ids:return
+        mapped=self.position and row.get('external_id')==self.position['external_id'] and row.get('id')==self.position['id']
+        if (not isinstance(ids,list) or self.order_id not in ids) and not mapped:return
         if not isinstance(row.get('external_id'),int) or isinstance(row['external_id'],bool) or row['external_id']<=0:return
         if not isinstance(row.get('id'),str) or len(row['id'])>128:return
         invest=number(row.get('invest'))
