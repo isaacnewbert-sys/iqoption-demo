@@ -45,10 +45,10 @@ class Tests(unittest.TestCase):
   with patch.dict(os.environ,{'PANEL_PASSWORD':'local-test','IQ_EMAIL':'','IQ_PASSWORD':''}):
    import app
   app.state.update(running=False,result=None)
-  with tempfile.TemporaryDirectory() as folder,patch.object(app,'HOLD_FILE',folder+'/hold'),patch.object(app.threading,'Thread'):
+  with tempfile.TemporaryDirectory() as folder,patch.object(app,'HOLD_FILE',folder+'/hold'),patch.object(app,'STATE_DB',folder+'/state.sqlite3'),patch.object(app.threading,'Thread'):
    with patch.dict(os.environ,{'PANEL_PASSWORD':'local-test','IQ_EMAIL':'demo','IQ_PASSWORD':'demo'}):
     c=app.app.test_client();self.assertEqual(c.post('/demo-order').status_code,401)
     h={'Authorization':'Basic '+base64.b64encode(b'isaac:local-test').decode()};self.assertEqual(c.post('/demo-order',headers=h).status_code,403)
     h['X-Demo-Panel']='1';self.assertEqual(c.post('/demo-order',headers=h).status_code,202)
-    app.state['running']=False;self.assertEqual(c.post('/demo-order',headers=h).status_code,409)
+    app.update_job(app.snapshot()['job_id'],running=False);self.assertEqual(c.post('/demo-order',headers=h).status_code,409)
 if __name__=='__main__':unittest.main()
