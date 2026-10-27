@@ -19,6 +19,9 @@ class Tests(unittest.TestCase):
  def test_wrong_account_order_asset_and_size_ignored(self):
   for change in ({'user_balance_id':1},{'active_id':1},{'invest':10},{'raw_event':{'order_ids':[100]}}):
    tracker=ProfitTracker(4,76);tracker.bind(99);tracker.ingest_position(dict(self.row,**change));self.assertIsNone(tracker.position)
+ def test_closed_update_keeps_previously_verified_position_identity(self):
+  self.t.ingest_position(dict(self.row,status='closed',raw_event={}))
+  self.assertEqual(self.t.position['status'],'closed')
  def test_state_does_not_mix_positions(self):
   self.t.receive({'name':'positions-state','msg':{'positions':[{'id':'someone-else','instrument_type':'digital-option','sell_profit':9,'pnl_net':8}]}})
   self.assertEqual(self.t.metrics['sell_profit'],1.08)
