@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v17-demo-test-order'
+VERSION = 'server-v18-fast-diagnostics'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -253,13 +253,13 @@ def inspect_client(client, pair, progress=lambda stage: None):
         while not trace.instruments_received and time.monotonic()<fallback_deadline:time.sleep(.1)
     server_time=client.api.timesync.server_timestamp
     candidates=sorted([i for i in trace.instruments if i['period']==300 and 0<i['expiration']-server_time<=600 and i['expiration']-i['deadtime']>server_time],key=lambda i:i['expiration'])
-    progress('Assinando preços pelo identificador do instrumento retornado pela IQ')
+    progress('Assinando preços dos contratos de 5 minutos' if candidates else 'A IQ não retornou instrumento disponível de 5 minutos')
     for instrument in candidates[:2]:
         client.api.send_websocket_request('subscribeMessage',{
             'name':'trading-settings.digital-option-client-price-generated','version':'1.0',
             'params':{'routingFilters':{'instrument_type':'digital-option','asset_id':trace.asset_id,'instrument_index':int(instrument['index'])}}},
             request_id=trace.request_id+'-prices')
-    deadline=time.monotonic()+20
+    deadline=time.monotonic()+(8 if candidates else 0)
     contracts=[]
     while time.monotonic()<deadline:
         contracts=verified_contracts(trace,client.api.timesync.server_timestamp)
