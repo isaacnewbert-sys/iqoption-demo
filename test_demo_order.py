@@ -26,6 +26,15 @@ class Tests(unittest.TestCase):
  def test_demo_only(self):
   r=send_demo_test(self.c);self.assertEqual(r['orders_sent'],1);self.assertEqual(r['order_id'],99)
   self.assertEqual(len(self.c.api.calls),1);body=self.c.api.calls[0][1]['body'];self.assertEqual(body['amount'],'1');self.assertEqual(body['user_balance_id'],1234);self.assertEqual(body['asset_id'],1861)
+ def test_put_uses_broker_put_symbol(self):
+  r=send_demo_test(self.c,direction='put')
+  self.assertEqual(r['direction'],'put');self.assertEqual(r['orders_sent'],1)
+  self.assertTrue(self.c.api.calls[0][1]['body']['instrument_id'].endswith('T5MPSPT'))
+ def test_invalid_direction_blocks(self):
+  r=send_demo_test(self.c,direction='sell')
+  self.assertEqual(r['orders_sent'],0);self.assertFalse(self.c.api.calls)
+ def test_real_put_blocked(self):
+  self.c.mode='REAL';self.assertEqual(send_demo_test(self.c,direction='put')['orders_sent'],0);self.assertFalse(self.c.api.calls)
  def test_real_blocked(self):
   self.c.mode='REAL';r=send_demo_test(self.c);self.assertEqual(r['orders_sent'],0);self.assertFalse(self.c.api.calls)
  def test_wrong_balance_type(self):
