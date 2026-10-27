@@ -44,6 +44,8 @@ def job():
   'eurusd_catalog_assets':[a for a in ws.get('catalog_assets',[]) if a['name'].startswith('EURUSD')],
   'pair':inner.get('pair'),
   'instruments_received':ws.get('instruments_received',False),
+  'instruments_raw_count':ws.get('instruments_raw_count',0),
+  'instrument_schema':ws.get('instrument_schema',[]),
   'instruments':ws.get('instruments',[]),
   'received_frames':ws.get('received_frames',0),
   'market_packet_count':len(ws.get('price_splitter_packets',[])),
