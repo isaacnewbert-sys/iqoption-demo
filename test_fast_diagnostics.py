@@ -14,6 +14,8 @@ class Tests(unittest.TestCase):
   class API:
    timesync=types.SimpleNamespace(server_timestamp=1793138400)
    def send_websocket_request(self,name,msg,request_id):
+    if msg['name'].endswith('instrument-generated'):
+     trace.receive(json.dumps({'name':'result','request_id':request_id,'msg':{'success':True}}));return
     if msg['name'].endswith('get-underlying-list'):
      body={'underlying':[{'active_id':1,'name':'EURUSD','is_suspended':False}]}
     elif msg['name'].endswith('get-instruments'):
