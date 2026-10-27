@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v12-asset-stream'
+VERSION = 'server-v13-instruments-v3'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -16,6 +16,7 @@ class WireTrace:
     # Keep only public-market packets and fixed diagnostic counters.
     # Never store profile, account balances, auth packets, tokens or error text.
     def __init__(self):
+        self.catalog_received=False; self.catalog_match=None; self.instruments_received=False; self.instruments=[]
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
@@ -28,9 +29,25 @@ class WireTrace:
             if not isinstance(event,dict): return
             name=event.get('name'); body=event.get('msg')
             # Fixed vocabulary only; unknown event names and arbitrary payloads stay private.
-            known=('timeSync','heartbeat','result','error','subscription-result','candle-generated','candles-generated','client-price-generated','price-splitter.client-price-generated','instrument-quotes-generated')
+            known=('timeSync','heartbeat','result','error','subscription-result','candle-generated','candles-generated','client-price-generated','price-splitter.client-price-generated','instrument-quotes-generated','digital-option-client-price-generated','trading-settings.digital-option-client-price-generated','digital-option-instruments.underlying-list','digital-option-instruments.instruments')
             label=name if name in known else 'other'
             self.event_counts[label]=self.event_counts.get(label,0)+1
+            rid=str(event.get('request_id',''))
+            if rid==self.request_id+'-catalog' and isinstance(body,dict) and isinstance(body.get('underlying'),list):
+                self.catalog_received=True
+                for row in body['underlying']:
+                    if isinstance(row,dict) and row.get('active_id')==self.asset_id:
+                        self.catalog_match={'active_id':self.asset_id,'is_suspended':row.get('is_suspended') if isinstance(row.get('is_suspended'),bool) else None}
+            if rid==self.request_id+'-instruments' and isinstance(body,dict) and isinstance(body.get('instruments'),list):
+                self.instruments_received=True
+                for row in body['instruments']:
+                    if not isinstance(row,dict) or row.get('asset_id')!=self.asset_id or row.get('instrument_type')!='digital-option':continue
+                    fields=('asset_id','index','period','expiration','deadtime')
+                    if not all(isinstance(row.get(k),(int,float)) and not isinstance(row.get(k),bool) for k in fields):continue
+                    safe={k:row[k] for k in fields}
+                    safe['symbols']=[{'direction':d['direction'],'symbol':d['symbol']} for d in row.get('data',[]) if isinstance(d,dict) and d.get('strike')=='SPT' and d.get('direction') in ('call','put') and isinstance(d.get('symbol'),str) and re.fullmatch(r'do[A-Za-z0-9_.-]+',d['symbol'])]
+                    self.instruments.append(safe)
+                self.instruments=self.instruments[-30:]
             if name=='candle-generated' and isinstance(body,dict) and body.get('active_id')==self.asset_id:
                 import math
                 close=body.get('close')
@@ -38,9 +55,9 @@ class WireTrace:
                     self.candles.append({'close':close,'received_at':time.monotonic()})
                     self.candles=self.candles[-5:]
 
-            if name in ('price-splitter.client-price-generated','client-price-generated') and isinstance(body,dict) and body.get('asset_id')==self.asset_id:
+            if name in ('price-splitter.client-price-generated','client-price-generated','trading-settings.digital-option-client-price-generated','digital-option-client-price-generated') and isinstance(body,dict) and body.get('asset_id')==self.asset_id:
                 # Public market event metadata only; no raw account payloads.
-                row={k:body[k] for k in ('asset_id','active_id','expiration_period','instrument_index','timestamp') if isinstance(body.get(k),(int,float))}
+                row={k:body[k] for k in ('asset_id','active_id','expiration_period','instrument_index','timestamp','quote_time') if isinstance(body.get(k),(int,float))}
                 row['fields']=[k for k in ('asset_id','active_id','expiration_period','instrument_index','timestamp','price','prices','quotes','symbols','expiration','instrument_type') if k in body]
                 contracts=[]
                 import math
@@ -65,7 +82,7 @@ class WireTrace:
 
 
             # Correlate ONLY our market-data request. Never dump server payloads.
-            if str(event.get('request_id','')) in (self.request_id,self.request_id+'-candles'):
+            if str(event.get('request_id','')) in (self.request_id,self.request_id+'-candles',self.request_id+'-catalog',self.request_id+'-instruments',self.request_id+'-prices'):
                 info={'channel':'candles' if str(event.get('request_id','')).endswith('-candles') else 'digital', 'event':name if name in ('result','error','subscription-result') else 'other'}
                 if isinstance(body,dict):
                     info['success']=body.get('success') if isinstance(body.get('success'),bool) else None
@@ -114,7 +131,7 @@ class WireTrace:
         except Exception:
             self.errors+=1
     def summary(self):
-        return {'event_counts':dict(self.event_counts),'underlying_updates':len(self.candles),'subscription_responses':self.subscription_responses,'price_splitter_packets':self.new_packets,'received_frames':self.frames,'market_packets_5m':len(self.quotes),'parser_exceptions':self.parser_errors,'websocket_errors':self.errors,'responses_seen':self.responses,'rejections_seen':self.rejections}
+        return {'catalog_received':self.catalog_received,'catalog_match':self.catalog_match,'instruments_received':self.instruments_received,'instruments':self.instruments,'event_counts':dict(self.event_counts),'underlying_updates':len(self.candles),'subscription_responses':self.subscription_responses,'price_splitter_packets':self.new_packets,'received_frames':self.frames,'market_packets_5m':len(self.quotes),'parser_exceptions':self.parser_errors,'websocket_errors':self.errors,'responses_seen':self.responses,'rejections_seen':self.rejections}
 
 def install_compatibility(trace):
     from iqoptionapi.ws.client import WebsocketClient
@@ -150,6 +167,13 @@ def verified_contracts(trace, server_time):
     for packet in reversed(trace.new_packets):
         if packet.get('asset_id')!=trace.asset_id: continue
         if time.monotonic()-packet.get('received_at_monotonic',0)>5: continue
+        metadata=None
+        if 'instrument_index' in packet:
+            metadata=next((i for i in trace.instruments if i['index']==packet['instrument_index'] and i['period']==300),None)
+            if metadata is None or not metadata['expiration']-metadata['deadtime']>server_time:continue
+        if 'quote_time' in packet:
+            qt=packet['quote_time'];qt=qt/1000 if qt>1e12 else qt
+            if abs(server_time-qt)>5:continue
         valid=[]
         for contract in packet.get('spot_contracts_5m',[]):
             symbol=contract.get('symbol','')
@@ -167,6 +191,7 @@ def verified_contracts(trace, server_time):
             except ValueError: continue
             # Use IQ server time, not the phone clock. Do not fabricate expiry IDs.
             if not 0<expiry-server_time<=600: continue
+            if metadata and (expiry!=metadata['expiration'] or not any(d['symbol']==symbol and d['direction']==direction for d in metadata['symbols'])):continue
             ask=contract.get('ask'); bid=contract.get('bid')
             if not all(isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) for v in (ask,bid)):continue
             if not 0<ask<=100 or not 0<=bid<=ask:continue
@@ -185,18 +210,28 @@ def inspect_client(client, pair, progress=lambda stage: None):
     trace=client.trace
     trace.asset_id=int(constants.ACTIVES[pair]);trace.pair=pair
     trace.event_counts={};trace.started_at=time.monotonic()
-    progress('Assinando preços digitais pelo ativo; selecionando 5 minutos nos contratos recebidos')
-    # CassDs/iqoptionapi SubscribeDigitalPriceSplitter: asset filter only.
-    # expiration_period can silently over-filter this channel. Do not invent instrument_index.
-    client.api.send_websocket_request('subscribeMessage',{
-        'name':'price-splitter.client-price-generated','version':'1.0',
-        'params':{'routingFilters':{'instrument_type':'digital-option','asset_id':trace.asset_id}}},
-        request_id=trace.request_id)
-    progress('Conferindo também atualizações do preço EUR/USD, separadas dos contratos digitais')
+    progress('Consultando catálogo e instrumentos digitais versão 3')
+    # Protocol source: TradeCodeHub/client-sdk-js src/index.ts, v3 instruments.
+    client.api.send_websocket_request('sendMessage',{
+        'name':'digital-option-instruments.get-underlying-list','version':'3.0',
+        'body':{'filter_suspended':True}},request_id=trace.request_id+'-catalog')
+    client.api.send_websocket_request('sendMessage',{
+        'name':'digital-option-instruments.get-instruments','version':'3.0',
+        'body':{'asset_id':trace.asset_id}},request_id=trace.request_id+'-instruments')
     client.api.send_websocket_request('subscribeMessage',{
         'name':'candle-generated',
         'params':{'routingFilters':{'active_id':str(trace.asset_id),'size':60}}},
         request_id=trace.request_id+'-candles')
+    lookup_deadline=time.monotonic()+8
+    while not trace.instruments_received and time.monotonic()<lookup_deadline:time.sleep(.1)
+    server_time=client.api.timesync.server_timestamp
+    candidates=sorted([i for i in trace.instruments if i['period']==300 and 0<i['expiration']-server_time<=600 and i['expiration']-i['deadtime']>server_time],key=lambda i:i['expiration'])
+    progress('Assinando preços pelo identificador do instrumento retornado pela IQ')
+    for instrument in candidates[:2]:
+        client.api.send_websocket_request('subscribeMessage',{
+            'name':'trading-settings.digital-option-client-price-generated','version':'1.0',
+            'params':{'routingFilters':{'instrument_type':'digital-option','asset_id':trace.asset_id,'instrument_index':int(instrument['index'])}}},
+            request_id=trace.request_id+'-prices')
     deadline=time.monotonic()+20
     contracts=[]
     while time.monotonic()<deadline:
