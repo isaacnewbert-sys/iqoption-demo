@@ -30,6 +30,16 @@ class Tests(unittest.TestCase):
  def test_opening_panel_does_not_start_worker(self):
   with patch.object(app.subprocess,'Popen') as child:
    self.assertFalse(app.snapshot()['running']);child.assert_not_called()
+ def test_put_route_passes_direction_and_monitor(self):
+  import base64
+  env={'PANEL_PASSWORD':'test-local','IQ_EMAIL':'demo','IQ_PASSWORD':'demo'}
+  h={'Authorization':'Basic '+base64.b64encode(b'isaac:test-local').decode(),'X-Demo-Panel':'1'}
+  with patch.dict(os.environ,env),patch.object(app,'HOLD_FILE',self.folder.name+'/hold'),patch.object(app.threading,'Thread') as thread:
+   c=app.app.test_client()
+   self.assertEqual(c.post('/demo-order',headers=h,json={'direction':'bad'}).status_code,400)
+   r=c.post('/demo-order',headers=h,json={'pair':'EURUSD-OTC','direction':'put'})
+   self.assertEqual(r.status_code,202);self.assertEqual(r.json['direction'],'put')
+   self.assertEqual(thread.call_args.kwargs['args'][3:],(True,'put'))
  def test_temporary_release_capability_is_scoped_single_use_and_expiring(self):
   env={'PANEL_PASSWORD':'test-local','IQ_EMAIL':'demo','IQ_PASSWORD':'demo','DEMO_RELEASE_TEST_TOKEN':'local-cap','DEMO_RELEASE_TEST_EXPIRES':str(time.time()+300)}
   with patch.dict(os.environ,env),patch.object(app,'HOLD_FILE',self.folder.name+'/hold'),patch.object(app.threading,'Thread') as thread:
