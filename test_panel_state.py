@@ -1,4 +1,4 @@
-import unittest,tempfile,time,importlib.util
+import unittest,tempfile,time,importlib.util,os
 from unittest.mock import patch
 import app
 class Tests(unittest.TestCase):
@@ -30,4 +30,16 @@ class Tests(unittest.TestCase):
  def test_opening_panel_does_not_start_worker(self):
   with patch.object(app.subprocess,'Popen') as child:
    self.assertFalse(app.snapshot()['running']);child.assert_not_called()
+ def test_temporary_release_capability_is_scoped_single_use_and_expiring(self):
+  env={'PANEL_PASSWORD':'test-local','IQ_EMAIL':'demo','IQ_PASSWORD':'demo','DEMO_RELEASE_TEST_TOKEN':'local-cap','DEMO_RELEASE_TEST_EXPIRES':str(time.time()+300)}
+  with patch.dict(os.environ,env),patch.object(app,'HOLD_FILE',self.folder.name+'/hold'),patch.object(app.threading,'Thread') as thread:
+   c=app.app.test_client();h={'X-Demo-Release-Test':'local-cap'}
+   self.assertEqual(c.post('/release-demo-test').status_code,401)
+   self.assertEqual(c.post('/run',headers=h).status_code,401)
+   with patch.dict(os.environ,{'DEMO_RELEASE_TEST_EXPIRES':str(time.time()-1)}):self.assertEqual(c.post('/release-demo-test',headers=h).status_code,401)
+   response=c.post('/release-demo-test',headers=h,json={'account':'REAL','amount':999,'pair':'BTCUSD'})
+   self.assertEqual(response.status_code,202);self.assertEqual(response.json['account'],'PRACTICE');self.assertEqual(response.json['amount'],1)
+   self.assertEqual(thread.call_args.kwargs['args'][2],'EURUSD-OTC')
+   app.update_job(app.snapshot()['job_id'],running=False)
+   self.assertEqual(c.post('/release-demo-test',headers=h).status_code,409)
 if __name__=='__main__':unittest.main()
