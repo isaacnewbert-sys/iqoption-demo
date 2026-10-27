@@ -39,7 +39,7 @@ class Tests(unittest.TestCase):
    with patch.dict(os.environ,{'DEMO_RELEASE_TEST_EXPIRES':str(time.time()-1)}):self.assertEqual(c.post('/release-demo-test',headers=h).status_code,401)
    response=c.post('/release-demo-test',headers=h,json={'account':'REAL','amount':999,'pair':'BTCUSD'})
    self.assertEqual(response.status_code,202);self.assertEqual(response.json['account'],'PRACTICE');self.assertEqual(response.json['amount'],1)
-   self.assertEqual(thread.call_args.kwargs['args'][2],'EURUSD-OTC')
+   self.assertEqual(thread.call_args.kwargs['args'][2],'EURUSD-OTC');self.assertTrue(thread.call_args.kwargs['args'][3])
    app.update_job(app.snapshot()['job_id'],running=False)
    self.assertEqual(c.post('/release-demo-test',headers=h).status_code,409)
 if __name__=='__main__':unittest.main()
