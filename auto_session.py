@@ -2,6 +2,7 @@
 import json,sqlite3,time,uuid,threading
 from decimal import Decimal
 from profit_exit import number
+MAX_OPEN_POSITIONS=3
 DB='/tmp/iq-auto-session-v1.sqlite3'
 def change(fn=None):
  with sqlite3.connect(DB,timeout=3) as db:
@@ -17,7 +18,7 @@ def claim(pair):
   if s.get('active') or s.get('uncertain') or s.get('submission_pending') or s.get('target_reached'):raise RuntimeError('Sessão ativa, incerta ou meta já atingida')
   if s.get('pair') and s['pair']!=pair:raise RuntimeError('Retome a sessão no mesmo ativo')
   s.setdefault('uncertain',False)
-  s.update(token=token,pair=pair,active=True,stop=False,max_positions=2)
+  s.update(token=token,pair=pair,active=True,stop=False,max_positions=MAX_OPEN_POSITIONS)
  change(f);return token
 
 def update(token,**values):
@@ -90,7 +91,7 @@ class TrackerGroup:
  def position_ids(self):return [p['id'] for p in self.open_positions()]
 
 class PositionBook:
- MAX=2
+ MAX=MAX_OPEN_POSITIONS
  def __init__(self):self.rows={};self.lock=threading.RLock()
  def active(self):
   with self.lock:return [dict(r['result']) for r in self.rows.values() if not r['done']]
@@ -110,7 +111,7 @@ def run_session(client,pair,token,progress,emit):
  from probe import inspect_client,send_demo_test
  from profit_exit import monitor_profit,ProfitTracker
  from strategy import analyze
- outcome={'account':'PRACTICE','automatic_demo':True,'orders_sent':0,'max_positions':2,'requested_pair':pair};history=[]
+ outcome={'account':'PRACTICE','automatic_demo':True,'orders_sent':0,'max_positions':MAX_OPEN_POSITIONS,'requested_pair':pair};history=[]
  group=TrackerGroup();book=PositionBook();threads=[];publication=threading.RLock();client.trace.profit_tracker=group
  original_send=getattr(client.api,'send_websocket_request',None);wire_lock=threading.RLock()
  if callable(original_send):
