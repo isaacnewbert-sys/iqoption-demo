@@ -25,6 +25,27 @@ class Tests(unittest.TestCase):
  def test_state_does_not_mix_positions(self):
   self.t.receive({'name':'positions-state','msg':{'positions':[{'id':'someone-else','instrument_type':'digital-option','sell_profit':9,'pnl_net':8}]}})
   self.assertEqual(self.t.metrics['sell_profit'],1.08)
+ def test_history_recovers_only_matching_demo_closed_order(self):
+  closed=dict(self.row,status='closed',pnl_realized=-1)
+  self.t.receive({'name':'history-positions','request_id':'tp8-history-a','msg':{'positions':[dict(closed,user_balance_id=999),dict(closed,active_id=999)]}})
+  self.assertEqual(self.t.position['status'],'open')
+  self.t.receive({'name':'history-positions','request_id':'tp8-history-a','msg':{'positions':[closed]}})
+  self.assertEqual(self.t.position['status'],'closed');self.assertEqual(self.t.position['pnl_realized'],-1)
+ def test_monitor_requests_terminal_history_after_expiry(self):
+  calls=[];clock=[0]
+  def tick():clock[0]+=.02;return clock[0]
+  def send(name,msg,request_id):
+   calls.append(msg['name'])
+   if msg['name']=='portfolio.get-history-positions':
+    self.t.receive({'request_id':request_id,'msg':{'positions':[dict(self.row,status='closed',pnl_realized=-1)]}})
+  client=types.SimpleNamespace(api=types.SimpleNamespace(send_websocket_request=send,timesync=types.SimpleNamespace(server_timestamp=1001)),trace=types.SimpleNamespace(profit_tracker=self.t,request_id='test'))
+  with patch('profit_exit.time.monotonic',side_effect=tick),patch('profit_exit.time.sleep'):
+   result=monitor_profit(client,{'order_id':99,'expiration_timestamp':1000})
+  self.assertEqual(result['monitor_status'],'POSICAO_ENCERRADA');self.assertEqual(result['broker_pnl_realized'],-1)
+  self.assertIn('portfolio.get-history-positions',calls);self.assertNotIn('digital-options.close-position',calls)
+ def test_empty_history_is_not_proof_of_closure(self):
+  self.t.receive({'request_id':'tp8-history-a','msg':{'positions':[]}})
+  self.assertEqual(self.t.position['status'],'open')
  def test_close_ack_is_not_closed_position(self):
   self.t.close_request_id='close-1';self.t.receive({'name':'result','request_id':'close-1','msg':{'success':True}})
   self.assertTrue(self.t.close_ack);self.assertEqual(self.t.position['status'],'open')
