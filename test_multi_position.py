@@ -9,11 +9,12 @@ class Tests(unittest.TestCase):
  def setUp(self):
   self.folder=tempfile.TemporaryDirectory();self.p=patch.object(session,'DB',self.folder.name+'/state');self.p.start()
  def tearDown(self):self.p.stop();self.folder.cleanup()
- def test_capacity_two_and_no_opposite_direction(self):
+ def test_capacity_three_and_no_opposite_direction(self):
   b=session.PositionBook();b.add({'order_id':1,'direction':'call'})
   self.assertFalse(b.can_enter('put'));self.assertTrue(b.can_enter('call'))
-  b.add({'order_id':2,'direction':'call'});self.assertFalse(b.can_enter('call'))
-  with self.assertRaises(RuntimeError):b.add({'order_id':3,'direction':'call'})
+  b.add({'order_id':2,'direction':'call'});self.assertTrue(b.can_enter('call'))
+  b.add({'order_id':3,'direction':'call'});self.assertFalse(b.can_enter('call'))
+  with self.assertRaises(RuntimeError):b.add({'order_id':4,'direction':'call'})
   b.update(1,{'order_id':1,'direction':'call'},done=True);self.assertTrue(b.can_enter('call'))
  def test_goal_latches_even_if_remaining_position_loses(self):
   t=session.claim('EURUSD-OTC');session.establish(t,100,4)
@@ -36,7 +37,7 @@ class Tests(unittest.TestCase):
   g.receive({'name':'portfolio.positions-state','msg':{'positions':[dict(id='first',instrument_type='digital-option',sell_profit=1.08,pnl_net=.08),dict(id='second',instrument_type='digital-option',sell_profit=.7,pnl_net=-.3)]}})
   self.assertEqual(set(g.position_ids()),{'first','second'});self.assertTrue(a.valuation(100)['target_reached']);self.assertFalse(b.valuation(100)['target_reached'])
   self.assertEqual(a.position['external_id'],110);self.assertEqual(b.position['external_id'],120)
- def test_automatic_loop_accepts_two_distinct_signals_and_drains_both_on_pause(self):
+ def test_automatic_loop_accepts_three_signals_blocks_fourth_and_drains_all_on_pause(self):
   gate=threading.Event();clock=[1000];observations=[0];sent=[];monitored=[]
   trace=types.SimpleNamespace(asset_id=76,strategy_candles={0:{}},strategy_received=1000)
   client=types.SimpleNamespace(trace=trace,api=types.SimpleNamespace(timesync=types.SimpleNamespace(server_timestamp=1000)),get_balance_mode=lambda:'PRACTICE',get_balance_id=lambda:4)
@@ -50,11 +51,11 @@ class Tests(unittest.TestCase):
    if not gate.wait(3):raise RuntimeError('gate timeout')
    return dict(entry,monitor_status='POSICAO_ENCERRADA',broker_pnl_realized=.08)
   def emit(row):
-   if row.get('open_positions')==2:
+   if row.get('open_positions')==3:
     observations[0]+=1
     if observations[0]>=3:session.update(t,stop=True);gate.set()
   def sleep(_):clock[0]+=61;threading.Event().wait(.002)
   with patch('probe.inspect_client'),patch('probe.send_demo_test',side_effect=send),patch('profit_exit.monitor_profit',side_effect=monitor),patch('strategy.analyze',side_effect=analyze),patch.object(session,'bounded_history',side_effect=history),patch.object(session,'demo_balance',return_value=(100,4)),patch.object(session,'no_positions',return_value=True),patch.object(session.time,'monotonic',side_effect=lambda:clock[0]),patch.object(session.time,'sleep',side_effect=sleep):
    r=session.run_session(client,'EURUSD-OTC',t,lambda _:None,emit)
-  self.assertEqual(len(sent),2);self.assertEqual(len(monitored),2);self.assertIsNot(monitored[0][1],monitored[1][1]);self.assertEqual(session.change()['realized'],'0.16');self.assertFalse(session.change()['active']);self.assertTrue(all(p['monitor_finished'] for p in r['positions']))
+  self.assertEqual(len(sent),3);self.assertEqual(len(monitored),3);self.assertEqual(len({id(t) for _,t in monitored}),3);self.assertEqual(session.change()['realized'],'0.24');self.assertFalse(session.change()['active']);self.assertTrue(all(p['monitor_finished'] for p in r['positions']))
 if __name__=='__main__':unittest.main()
