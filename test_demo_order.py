@@ -35,6 +35,9 @@ class Tests(unittest.TestCase):
   self.assertEqual(r['orders_sent'],0);self.assertFalse(self.c.api.calls)
  def test_real_put_blocked(self):
   self.c.mode='REAL';self.assertEqual(send_demo_test(self.c,direction='put')['orders_sent'],0);self.assertFalse(self.c.api.calls)
+ def test_session_guard_prevents_send(self):
+  r=send_demo_test(self.c,entry_guard=lambda:False)
+  self.assertEqual(r['order_status'],'BLOQUEADO_SINAL_OU_SESSAO_ALTERADA');self.assertFalse(self.c.api.calls)
  def test_real_blocked(self):
   self.c.mode='REAL';r=send_demo_test(self.c);self.assertEqual(r['orders_sent'],0);self.assertFalse(self.c.api.calls)
  def test_wrong_balance_type(self):
