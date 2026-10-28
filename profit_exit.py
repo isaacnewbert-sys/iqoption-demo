@@ -72,16 +72,17 @@ class ProfitTracker:
         else:return None
         return {'net_profit':float(profit),'profit_pct':float(profit/stake*100),'valuation_mode':mode,'target_reached':profit>=stake*Decimal('0.08')}
 
-def prepare_tracking(client):
+def prepare_tracking(client,tracker=None):
     if client.get_balance_mode()!='PRACTICE':return False
     profile=client.get_profile_ansyc();user_id=profile.get('user_id',profile.get('id'))
     if not isinstance(user_id,int) or isinstance(user_id,bool) or user_id<=0:return False
     trace=client.trace
-    trace.profit_tracker=ProfitTracker(client.get_balance_id(),trace.asset_id)
+    if tracker is None:trace.profit_tracker=ProfitTracker(client.get_balance_id(),trace.asset_id)
     specs=[('tp8-changed','portfolio.position-changed','3.0',{'routingFilters':{'user_id':user_id}}),('tp8-state','portfolio.positions-state','1.0',None)]
     for suffix,name,version,params in specs:
         msg={'name':name,'version':version}
         if params:msg['params']=params
+        trace.subscription_acks.pop(trace.request_id+'-'+suffix,None)
         client.api.send_websocket_request('subscribeMessage',msg,request_id=trace.request_id+'-'+suffix)
     deadline=time.monotonic()+4
     while time.monotonic()<deadline:
@@ -89,8 +90,8 @@ def prepare_tracking(client):
         time.sleep(.05)
     return False
 
-def monitor_profit(client,entry,progress=lambda _:None,update=lambda _:None):
-    tracker=client.trace.profit_tracker
+def monitor_profit(client,entry,progress=lambda _:None,update=lambda _:None,tracker=None,position_ids_provider=None):
+    tracker=tracker if tracker is not None else client.trace.profit_tracker
     tracker.bind(entry['order_id'])
     expiry=entry['expiration_timestamp'];started=time.monotonic()
     duration=min(620,max(1,expiry-client.api.timesync.server_timestamp+20))
@@ -110,7 +111,7 @@ def monitor_profit(client,entry,progress=lambda _:None,update=lambda _:None):
             result.update(monitor_status='FECHAMENTO_ANTECIPADO_CONFIRMADO' if sold else 'POSICAO_ENCERRADA',early_sell_verified=sold,close_reason=reason if isinstance(reason,str) and len(reason)<64 else 'omitted',broker_pnl_realized=pos.get('pnl_realized'),broker_close_profit=pos.get('close_profit'))
             update(result);return result
         if pos and (subscribed_id!=pos['id'] or now-last_subscription>=45):
-            client.api.send_websocket_request('sendMessage',{'name':'portfolio.subscribe-positions','version':'1.0','body':{'frequency':'frequent','ids':[pos['id']]}},request_id='tp8-watch-'+uuid.uuid4().hex)
+            client.api.send_websocket_request('sendMessage',{'name':'portfolio.subscribe-positions','version':'1.0','body':{'frequency':'frequent','ids':position_ids_provider() if position_ids_provider is not None else [pos['id']]}},request_id='tp8-watch-'+uuid.uuid4().hex)
             client.api.send_websocket_request('subscribeMessage',{'name':'portfolio.positions-state','version':'1.0'},request_id=client.trace.request_id+'-tp8-state')
             subscribed_id=pos['id'];last_subscription=now
         if tracker.metrics:
