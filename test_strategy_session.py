@@ -72,7 +72,7 @@ class Tests(unittest.TestCase):
  def test_auto_entry_monitor_target_and_no_second_entry(self):
   import types,time
   rows,live,now=self.bars();rows[-1].update(open=99.95,close=100.05,min=99.7,max=100.08);live.update(close=100.12,max=100.15)
-  trace=types.SimpleNamespace(strategy_candles={live['from']:live},strategy_received=time.monotonic())
+  trace=types.SimpleNamespace(asset_id=76,strategy_candles={live['from']:live},strategy_received=time.monotonic())
   client=types.SimpleNamespace(trace=trace,api=types.SimpleNamespace(timesync=types.SimpleNamespace(server_timestamp=now)),get_balance_mode=lambda:'PRACTICE',get_balance_id=lambda:4)
   t=session.claim('EURUSD-OTC');entry=dict(order_status='ORDEM_DEMO_CONFIRMADA',orders_sent=1,order_id=88,direction='call',expiration_timestamp=now+100)
   closed=dict(entry,monitor_status='FECHAMENTO_ANTECIPADO_CONFIRMADO',broker_pnl_realized=.08)
@@ -83,9 +83,9 @@ class Tests(unittest.TestCase):
  def test_stop_during_trade_does_not_interrupt_monitor(self):
   import types,time
   rows,live,now=self.bars();rows[-1].update(open=99.95,close=100.05,min=99.7,max=100.08);live.update(close=100.12,max=100.15)
-  client=types.SimpleNamespace(trace=types.SimpleNamespace(strategy_candles={live['from']:live},strategy_received=time.monotonic()),api=types.SimpleNamespace(timesync=types.SimpleNamespace(server_timestamp=now)),get_balance_mode=lambda:'PRACTICE',get_balance_id=lambda:4)
+  client=types.SimpleNamespace(trace=types.SimpleNamespace(asset_id=76,strategy_candles={live['from']:live},strategy_received=time.monotonic()),api=types.SimpleNamespace(timesync=types.SimpleNamespace(server_timestamp=now)),get_balance_mode=lambda:'PRACTICE',get_balance_id=lambda:4)
   t=session.claim('EURUSD-OTC');entry=dict(order_status='ORDEM_DEMO_CONFIRMADA',order_id=88,direction='call')
-  def monitor(*args):
+  def monitor(*args,**kwargs):
    session.update(t,stop=True)
    return dict(entry,monitor_status='POSICAO_ENCERRADA',broker_pnl_realized=-1)
   with patch.object(session,'no_positions',return_value=True),patch('probe.inspect_client'),patch('probe.send_demo_test',return_value=entry),patch('profit_exit.monitor_profit',side_effect=monitor) as m,patch.object(session,'bounded_history',return_value=rows+[live]),patch.object(session,'demo_balance',return_value=(100,4)),patch.object(session.time,'sleep'):
