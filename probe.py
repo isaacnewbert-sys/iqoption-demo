@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v24-two-positions'
+VERSION = 'server-v25-regime-analysis'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -18,7 +18,7 @@ class WireTrace:
     def __init__(self):
         self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]; self.instrument_schema=[]; self.instruments_raw_count=0; self.subscription_acks={}
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
-        self.strategy_candles={};self.strategy_received=0
+        self.strategy_candles={};self.strategy_received=0;self.strategy_events=0;self.strategy_rejected=0;self.strategy_schema=[]
         self.profit_tracker=None; self.order_request_id=None; self.order_reply=None; self.order_attempted=False
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
@@ -65,7 +65,10 @@ class WireTrace:
                 self.instruments=self.instruments[-30:]
             if name=='candle-generated' and isinstance(body,dict) and body.get('active_id')==self.asset_id:
                 from strategy import candle
+                self.strategy_events+=1
+                self.strategy_schema=[k for k in ('from','to','open','close','min','max','size') if k in body]
                 parsed=candle(body)
+                if parsed is None:self.strategy_rejected+=1
                 if parsed:
                     self.strategy_candles[parsed['from']]=parsed
                     self.strategy_candles=dict(sorted(self.strategy_candles.items())[-120:])
