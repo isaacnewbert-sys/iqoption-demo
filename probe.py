@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v28-multi-market'
+VERSION = 'server-v29-history-recovery'
 from settings import TRADE_AMOUNT,BASKET_MODES
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
@@ -357,7 +357,7 @@ def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None,
         pass
     return result
 
-def worker(queue, email, password, pair, test_order=False,take_profit_8=False,direction="call",automation_token=None):
+def worker(queue, email, password, pair, test_order=False,take_profit_8=False,direction="call",automation_token=None,audit_only=False):
     # The old SDK may write authentication details on errors; suppress its logs.
     logging.disable(logging.CRITICAL)
     import contextlib
@@ -379,6 +379,9 @@ def worker(queue, email, password, pair, test_order=False,take_profit_8=False,di
                 queue.put({'error':('Autenticação em duas etapas solicitada. Este diagnóstico não implementa a etapa de 2FA.' if _reason=='2FA' else 'Login não concluído; causa não confirmada. Confira acesso no aplicativo oficial. Nenhuma ordem enviada.')})
                 return
             progress("Conexão inicial aceita; verificando conta")
+            if audit_only:
+                from profit_exit import audit_history
+                queue.put(audit_history(client));return
             if automation_token:
                 from auto_session import run_session
                 if pair in BASKET_MODES:
