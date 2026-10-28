@@ -44,6 +44,21 @@ class Tests(unittest.TestCase):
   return result,[c for c in calls if c['name']=='digital-options.close-position']
  def test_target_closes_only_owned_position_and_waits_for_confirmation(self):
   result,calls=self.simulate();self.assertEqual(len(calls),1);self.assertEqual(calls[0]['body']['position_id'],999);self.assertTrue(result['early_sell_verified'])
+ def test_explicit_tracker_and_union_subscription_keep_closures_separate(self):
+  calls=[];clock=[0];tracker=self.t
+  def tick():clock[0]+=.02;return clock[0]
+  def send(name,msg,request_id):
+   calls.append(msg)
+   if msg['name']=='digital-options.close-position':
+    tracker.close_ack=True;tracker.ingest_position(dict(self.row,status='closed',close_reason='sold',pnl_realized=.08))
+  api=types.SimpleNamespace(send_websocket_request=send,timesync=types.SimpleNamespace(server_timestamp=1000))
+  client=types.SimpleNamespace(api=api,trace=types.SimpleNamespace(profit_tracker=object(),request_id='trace'),get_balance_mode=lambda:'PRACTICE',get_balance_id=lambda:4)
+  with patch('profit_exit.time.monotonic',side_effect=tick),patch('profit_exit.time.sleep'):
+   result=monitor_profit(client,{'order_id':99,'expiration_timestamp':1001},tracker=tracker,position_ids_provider=lambda:['position-a','position-b'])
+  subscriptions=[c for c in calls if c['name']=='portfolio.subscribe-positions']
+  self.assertEqual(subscriptions[0]['body']['ids'],['position-a','position-b'])
+  self.assertEqual([c['body']['position_id'] for c in calls if c['name']=='digital-options.close-position'],[999])
+  self.assertTrue(result['early_sell_verified'])
  def test_no_loss_stop(self):
   result,calls=self.simulate(loss=True);self.assertFalse(calls);self.assertFalse(result['early_sell_verified'])
  def test_never_closes_real_balance(self):
