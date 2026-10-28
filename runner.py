@@ -5,6 +5,7 @@ from streaming import ProgressQueue
 q=ProgressQueue()
 parser=argparse.ArgumentParser()
 parser.add_argument('--automation-token')
+parser.add_argument('--audit-history',action='store_true')
 parser.add_argument('--pair',choices=ALLOWED_MARKETS,default='MAJORS')
 parser.add_argument('--direction',choices=('call','put'),default='call')
 parser.add_argument('--demo-test-order',action='store_true')
@@ -12,8 +13,9 @@ parser.add_argument('--take-profit-8',action='store_true')
 args=parser.parse_args()
 if args.take_profit_8 and not args.demo_test_order:parser.error("Take-profit requires explicit demo order mode")
 if args.demo_test_order and not args.automation_token and args.pair in BASKET_MODES:parser.error('Manual test requires one explicit pair')
+if args.audit_history and (args.demo_test_order or args.automation_token):parser.error("History audit cannot submit orders")
 test_order=args.demo_test_order
-worker(q,os.environ['IQ_EMAIL'],os.environ['IQ_PASSWORD'],args.pair,test_order=test_order,take_profit_8=args.take_profit_8,direction=args.direction,automation_token=args.automation_token)
+worker(q,os.environ['IQ_EMAIL'],os.environ['IQ_PASSWORD'],args.pair,test_order=test_order,take_profit_8=args.take_profit_8,direction=args.direction,automation_token=args.automation_token,audit_only=args.audit_history)
 messages=[]
 while not q.empty():messages.append(q.get())
 print(json.dumps({'steps':list(q.steps),'result':next((m for m in reversed(messages) if 'progress' not in m),{'error':'Sem resultado'}),'demo_test_orders_enabled':True,'real_orders_enabled':False},ensure_ascii=False),flush=True)
