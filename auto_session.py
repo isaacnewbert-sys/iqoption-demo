@@ -1,5 +1,5 @@
 """Explicitly started PRACTICE session. Fixed baseline, own realized P/L ledger."""
-import json,sqlite3,time,uuid
+import json,sqlite3,time,uuid,threading
 from decimal import Decimal
 from profit_exit import number
 DB='/tmp/iq-auto-session-v1.sqlite3'
@@ -14,9 +14,10 @@ def change(fn=None):
 def claim(pair):
  token=uuid.uuid4().hex
  def f(s):
-  if s.get('active') or s.get('uncertain') or s.get('target_reached'):raise RuntimeError('Sessão ativa, incerta ou meta já atingida')
+  if s.get('active') or s.get('uncertain') or s.get('submission_pending') or s.get('target_reached'):raise RuntimeError('Sessão ativa, incerta ou meta já atingida')
   if s.get('pair') and s['pair']!=pair:raise RuntimeError('Retome a sessão no mesmo ativo')
-  s.update(token=token,pair=pair,active=True,stop=False)
+  s.setdefault('uncertain',False)
+  s.update(token=token,pair=pair,active=True,stop=False,max_positions=2)
  change(f);return token
 
 def update(token,**values):
@@ -43,7 +44,7 @@ def settle(token,result):
   if any(t['order_id']==oid for t in s.get('ledger',[])):return
   ledger=s.get('ledger',[])+[{'order_id':oid,'pnl':str(pnl),'direction':result.get('direction')}]
   realized=sum((Decimal(t['pnl']) for t in ledger),Decimal(0))
-  s.update(ledger=ledger,realized=str(realized),target_reached=realized>=Decimal(s['target']),uncertain=False)
+  s.update(ledger=ledger,realized=str(realized),target_reached=bool(s.get('target_reached')) or realized>=Decimal(s['target']))
  return change(f)
 
 def bounded_history(client):
@@ -72,57 +73,118 @@ def demo_balance(client):
  if not row:raise RuntimeError('Saldo demonstrativo não confirmado')
  return row['amount'],bid
 
+class TrackerGroup:
+ """Fan out account events; each tracker accepts only its mapped order/position."""
+ def __init__(self):self.trackers=[];self.lock=threading.RLock()
+ def add(self,tracker):
+  with self.lock:self.trackers.append(tracker)
+ def remove(self,tracker):
+  with self.lock:
+   if tracker in self.trackers:self.trackers.remove(tracker)
+ def receive(self,event):
+  with self.lock:trackers=list(self.trackers)
+  for tracker in trackers:tracker.receive(event)
+ def open_positions(self):
+  with self.lock:trackers=list(self.trackers)
+  return [dict(t.position) for t in trackers if t.position and t.position.get('status')=='open']
+ def position_ids(self):return [p['id'] for p in self.open_positions()]
+
+class PositionBook:
+ MAX=2
+ def __init__(self):self.rows={};self.lock=threading.RLock()
+ def active(self):
+  with self.lock:return [dict(r['result']) for r in self.rows.values() if not r['done']]
+ def can_enter(self,direction):
+  positions=self.active()
+  return len(positions)<self.MAX and all(r.get('direction')==direction for r in positions)
+ def add(self,entry):
+  with self.lock:
+   if entry['order_id'] in self.rows or not self.can_enter(entry['direction']):raise RuntimeError('Limite, ordem duplicada ou direção conflitante')
+   self.rows[entry['order_id']]={'result':dict(entry),'done':False}
+ def update(self,oid,result,done=False):
+  with self.lock:self.rows[oid]={'result':dict(result),'done':done}
+ def snapshot(self):
+  with self.lock:return [dict(r['result'],monitor_finished=r['done']) for r in self.rows.values()][-20:]
+
 def run_session(client,pair,token,progress,emit):
  from probe import inspect_client,send_demo_test
- from profit_exit import monitor_profit
+ from profit_exit import monitor_profit,ProfitTracker
  from strategy import analyze
- outcome={'account':'PRACTICE','automatic_demo':True,'orders_sent':0}
+ outcome={'account':'PRACTICE','automatic_demo':True,'orders_sent':0,'max_positions':2}
+ group=TrackerGroup();book=PositionBook();threads=[];publication=threading.RLock();client.trace.profit_tracker=group
+ original_send=getattr(client.api,'send_websocket_request',None);wire_lock=threading.RLock()
+ if callable(original_send):
+  def serialized_send(*args,**kwargs):
+   with wire_lock:return original_send(*args,**kwargs)
+  client.api.send_websocket_request=serialized_send
+ fields=('initial_balance','target','realized','target_reached','active','stop','uncertain','submission_pending','max_positions')
  def publish(**extra):
-  s=change();emit(dict(outcome,session={k:s.get(k) for k in ('initial_balance','target','realized','target_reached','active','stop','uncertain')},**extra))
+  with publication:
+   s=change();emit(dict(outcome,positions=book.snapshot(),open_positions=len(book.active()),session={k:s.get(k) for k in fields},**extra))
+ def watch(entry,tracker,analysis):
+  try:
+   result=monitor_profit(client,entry,progress,lambda r:(book.update(entry['order_id'],r),publish(analysis=analysis)),tracker=tracker,position_ids_provider=group.position_ids)
+   settle(token,result);book.update(entry['order_id'],result,done=True)
+  except Exception:
+   update(token,uncertain=True,stop=True)
+   book.update(entry['order_id'],dict(entry,monitor_status='ENCERRAMENTO_INCERTO_CONFIRA_IQ'),done=True)
+  finally:
+   group.remove(tracker);publish()
  try:
   inspect_client(client,pair,progress)
   if not no_positions(client):raise RuntimeError('Posições prévias ou não confirmadas')
   balance,bid=demo_balance(client);establish(token,balance,bid)
-  deadline=time.monotonic()+21600;last_history=0;history=[];last_signal=change().get('last_signal');last_trade=0
+  deadline=time.monotonic()+21600;last_history=0;history=[];used=set(change().get('used_signals',[]));last_trade=0
+  if change().get('last_signal'):used.add(change()['last_signal'])
   while time.monotonic()<deadline and not stopped(token):
    s=change()
-   if s.get('target_reached'):break
+   if s.get('target_reached') or s.get('uncertain'):break
    if client.get_balance_mode()!='PRACTICE' or client.get_balance_id()!=bid:raise RuntimeError('Conta mudou')
    now=client.api.timesync.server_timestamp
    if time.monotonic()-last_history>=20:
     history=bounded_history(client);last_history=time.monotonic()
    live=list(client.trace.strategy_candles.values())
-   if not live or time.monotonic()-client.trace.strategy_received>3:
-    analysis={'direction':None,'reason':'Cotação de vela atrasada ou formato ainda não confirmado'}
+   if not live or time.monotonic()-client.trace.strategy_received>3:analysis={'direction':None,'reason':'Cotação de vela atrasada ou formato ainda não confirmado'}
    else:analysis=analyze(history+live,now)
-   progress('Analisando: '+analysis['reason']);publish(analysis=analysis)
-   if analysis.get('direction') and analysis.get('signal_id')!=last_signal and time.monotonic()-last_trade>=60:
-    # Refresh broker catalogue/contracts before each entry, then reassess live signal.
+   eligible=book.can_enter(analysis.get('direction'))
+   progress('Analisando: '+analysis['reason']+(' · limite ou direção conflitante' if not eligible else ''));publish(analysis=analysis)
+   if analysis.get('direction') and analysis.get('signal_id') not in used and time.monotonic()-last_trade>=60 and eligible:
     inspect_client(client,pair,progress)
     fresh=analyze(bounded_history(client)+list(client.trace.strategy_candles.values()),client.api.timesync.server_timestamp)
     if stopped(token):break
     if time.monotonic()-client.trace.strategy_received>3 or fresh.get('signal_id')!=analysis['signal_id']:continue
     available,current_bid=demo_balance(client)
     if current_bid!=bid or number(available) is None or number(available)<1:raise RuntimeError('Saldo insuficiente ou conta mudou')
-    update(token,uncertain=True)
+    update(token,submission_pending=True)
+    tracker=ProfitTracker(bid,client.trace.asset_id);group.add(tracker)
     def entry_guard():
      latest=analyze(history+list(client.trace.strategy_candles.values()),client.api.timesync.server_timestamp)
-     return not stopped(token) and not change().get('target_reached') and time.monotonic()-client.trace.strategy_received<=3 and latest.get('signal_id')==fresh['signal_id']
-    entry=send_demo_test(client,take_profit_8=True,direction=fresh['direction'],entry_guard=entry_guard)
-    last_signal=fresh['signal_id'];last_trade=time.monotonic();update(token,last_signal=last_signal)
+     state=change()
+     return not stopped(token) and not state.get('target_reached') and not state.get('uncertain') and book.can_enter(fresh['direction']) and time.monotonic()-client.trace.strategy_received<=3 and latest.get('signal_id')==fresh['signal_id']
+    entry=send_demo_test(client,take_profit_8=True,direction=fresh['direction'],entry_guard=entry_guard,tracker=tracker,allowed_positions=group.open_positions)
+    used.add(fresh['signal_id']);last_trade=time.monotonic();update(token,last_signal=fresh['signal_id'],used_signals=sorted(used)[-500:])
     if entry.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
-     outcome.update(entry);publish(analysis=fresh)
-     result=monitor_profit(client,entry,progress,lambda r:publish(trade=r,analysis=fresh))
-     settle(token,result);outcome.update(result);publish(analysis=fresh)
+     tracker.bind(entry['order_id']);book.add(entry);update(token,submission_pending=False)
+     outcome['orders_sent']+=1
+     thread=threading.Thread(target=watch,args=(dict(entry),tracker,dict(fresh)),daemon=True);threads.append(thread);thread.start();publish(analysis=fresh)
      client.trace.order_attempted=False;client.trace.order_reply=None;client.trace.order_request_id=None
-    elif entry.get('order_attempted') and entry.get('orders_sent') is None:raise RuntimeError('Envio incerto')
+    elif entry.get('order_attempted') and entry.get('orders_sent') is None:
+     group.remove(tracker);update(token,uncertain=True,submission_pending=False);raise RuntimeError('Envio incerto')
     else:
-     update(token,uncertain=False);publish(last_entry=entry)
+     group.remove(tracker);update(token,submission_pending=False);publish(last_entry=entry)
    time.sleep(2)
   outcome['automation_status']='META_ATINGIDA' if change().get('target_reached') else 'SESSAO_PAUSADA'
  except Exception:
+  if change().get('submission_pending'):update(token,uncertain=True,submission_pending=False)
   outcome['automation_status']='INTERROMPIDA_CONFIRA_PAINEL_E_IQ'
  finally:
+  # No new entries after stop/target; every accepted position keeps its own +8% monitor.
+  while any(t.is_alive() for t in threads):
+   progress('Novas entradas pausadas · acompanhando posições abertas até +8% ou vencimento');publish()
+   for t in threads:t.join(timeout=.2)
+  if change().get('uncertain'):outcome['automation_status']='INTERROMPIDA_CONFIRA_PAINEL_E_IQ'
+  elif change().get('target_reached'):outcome['automation_status']='META_ATINGIDA'
+  if callable(original_send):client.api.send_websocket_request=original_send
   update(token,active=False);publish()
- outcome['session']={k:change().get(k) for k in ('initial_balance','target','realized','target_reached','active','stop','uncertain')}
+ outcome['session']={k:change().get(k) for k in fields};outcome['positions']=book.snapshot()
  return outcome
