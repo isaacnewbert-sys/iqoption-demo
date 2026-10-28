@@ -2,7 +2,7 @@
 import json,sqlite3,time,uuid,threading
 from decimal import Decimal
 from profit_exit import number
-MAX_OPEN_POSITIONS=3
+from settings import MAX_OPEN_POSITIONS,TRADE_AMOUNT
 DB='/tmp/iq-auto-session-v1.sqlite3'
 def change(fn=None):
  with sqlite3.connect(DB,timeout=3) as db:
@@ -18,7 +18,7 @@ def claim(pair):
   if s.get('active') or s.get('uncertain') or s.get('submission_pending') or s.get('target_reached'):raise RuntimeError('Sessão ativa, incerta ou meta já atingida')
   if s.get('pair') and s['pair']!=pair:raise RuntimeError('Retome a sessão no mesmo ativo')
   s.setdefault('uncertain',False)
-  s.update(token=token,pair=pair,active=True,stop=False,max_positions=MAX_OPEN_POSITIONS)
+  s.update(token=token,pair=pair,active=True,stop=False,max_positions=MAX_OPEN_POSITIONS,entry_amount=TRADE_AMOUNT)
  change(f);return token
 
 def update(token,**values):
@@ -31,7 +31,7 @@ def stopped(token):
 
 def establish(token,balance,balance_id):
  n=number(balance)
- if n is None or n<1:raise RuntimeError('Saldo inválido')
+ if n is None or n<=0:raise RuntimeError('Saldo inválido')
  s=change()
  if s.get('balance_id') not in (None,balance_id):raise RuntimeError('Conta mudou')
  if 'initial_balance' not in s:s=update(token,initial_balance=str(n),target=str(n*Decimal('.01')),realized='0',balance_id=balance_id,ledger=[])
@@ -43,7 +43,7 @@ def settle(token,result):
  def f(s):
   if s.get('token')!=token:raise RuntimeError('Sessão mudou')
   if any(t['order_id']==oid for t in s.get('ledger',[])):return
-  ledger=s.get('ledger',[])+[{'order_id':oid,'pnl':str(pnl),'direction':result.get('direction'),'setup':result.get('setup'),'regime':result.get('regime')}]
+  ledger=s.get('ledger',[])+[{'order_id':oid,'pnl':str(pnl),'direction':result.get('direction'),'setup':result.get('setup'),'regime':result.get('regime'),'pair':result.get('pair'),'amount':result.get('amount')}]
   realized=sum((Decimal(t['pnl']) for t in ledger),Decimal(0))
   s.update(ledger=ledger,realized=str(realized),target_reached=bool(s.get('target_reached')) or realized>=Decimal(s['target']))
  return change(f)
@@ -95,12 +95,12 @@ class PositionBook:
  def __init__(self):self.rows={};self.lock=threading.RLock()
  def active(self):
   with self.lock:return [dict(r['result']) for r in self.rows.values() if not r['done']]
- def can_enter(self,direction):
+ def can_enter(self,direction,pair=None):
   positions=self.active()
-  return len(positions)<self.MAX and all(r.get('direction')==direction for r in positions)
+  return len(positions)<self.MAX and all(r.get('direction')==direction for r in positions if pair is None or r.get('pair')==pair)
  def add(self,entry):
   with self.lock:
-   if entry['order_id'] in self.rows or not self.can_enter(entry['direction']):raise RuntimeError('Limite, ordem duplicada ou direção conflitante')
+   if entry['order_id'] in self.rows or not self.can_enter(entry['direction'],entry.get('pair')):raise RuntimeError('Limite, ordem duplicada ou direção conflitante')
    self.rows[entry['order_id']]={'result':dict(entry),'done':False}
  def update(self,oid,result,done=False):
   with self.lock:self.rows[oid]={'result':dict(result),'done':done}
@@ -163,9 +163,9 @@ def run_session(client,pair,token,progress,emit):
     if stopped(token):break
     if time.monotonic()-client.trace.strategy_received>3 or fresh.get('signal_id')!=analysis['signal_id']:continue
     available,current_bid=demo_balance(client)
-    if current_bid!=bid or number(available) is None or number(available)<1:raise RuntimeError('Saldo insuficiente ou conta mudou')
+    if current_bid!=bid or number(available) is None or number(available)<TRADE_AMOUNT:raise RuntimeError('Saldo insuficiente ou conta mudou')
     update(token,submission_pending=True)
-    tracker=ProfitTracker(bid,client.trace.asset_id);group.add(tracker)
+    tracker=ProfitTracker(bid,client.trace.asset_id,amount=TRADE_AMOUNT);group.add(tracker)
     def entry_guard():
      latest=analyze(history+list(client.trace.strategy_candles.values()),client.api.timesync.server_timestamp)
      state=change()
