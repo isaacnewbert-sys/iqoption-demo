@@ -64,7 +64,7 @@ def headers(r):
 @app.get('/health')
 def health():
  current=snapshot()
- return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_DEMO_ONLY','automatic_demo_available':True,'max_positions':MAX_OPEN_POSITIONS,'trade_amount':TRADE_AMOUNT,'demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v28-multi-market','diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
+ return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_DEMO_ONLY','automatic_demo_available':True,'max_positions':MAX_OPEN_POSITIONS,'trade_amount':TRADE_AMOUNT,'demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v29-history-recovery','diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
 @app.get('/')
 def index():
  return Path(__file__).with_name('dashboard.html').read_text(encoding='utf-8').replace('__MAX_POSITIONS__',str(MAX_OPEN_POSITIONS)).replace('__TRADE_AMOUNT__',str(TRADE_AMOUNT))
@@ -266,6 +266,10 @@ def release_demo_test():
 
 def market_preflight():
  """Read-only release check; never invokes a demo order or changes panel job state."""
+ try:
+  audit=run_process([sys.executable,'runner.py','--audit-history'],35,job_id='history-audit')
+  print('IQ_DEMO_HISTORY_AUDIT '+json.dumps(audit.get('result',{})),flush=True)
+ except Exception:print('IQ_DEMO_HISTORY_AUDIT '+json.dumps({'history_received':False,'orders_sent':0}),flush=True)
  for pair in ('EURUSD','EURUSD-OTC'):
   try:
    data=run_process([sys.executable,'runner.py','--pair',pair],35,job_id='release-preflight')
