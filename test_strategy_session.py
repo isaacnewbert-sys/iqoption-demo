@@ -75,8 +75,8 @@ class Tests(unittest.TestCase):
   trace=types.SimpleNamespace(asset_id=76,strategy_candles={live['from']:live},strategy_received=time.monotonic())
   client=types.SimpleNamespace(trace=trace,api=types.SimpleNamespace(timesync=types.SimpleNamespace(server_timestamp=now)),get_balance_mode=lambda:'PRACTICE',get_balance_id=lambda:4)
   t=session.claim('EURUSD-OTC');entry=dict(order_status='ORDEM_DEMO_CONFIRMADA',orders_sent=1,order_id=88,direction='call',expiration_timestamp=now+100)
-  closed=dict(entry,monitor_status='FECHAMENTO_ANTECIPADO_CONFIRMADO',broker_pnl_realized=.08)
-  with patch.object(session,'no_positions',return_value=True),patch('probe.inspect_client'),patch('probe.send_demo_test',return_value=entry) as send,patch('profit_exit.monitor_profit',return_value=closed) as monitor,patch.object(session,'bounded_history',return_value=rows+[live]),patch.object(session,'demo_balance',return_value=(8,4)),patch.object(session.time,'sleep'):
+  closed=dict(entry,monitor_status='FECHAMENTO_ANTECIPADO_CONFIRMADO',broker_pnl_realized=8)
+  with patch.object(session,'no_positions',return_value=True),patch('probe.inspect_client'),patch('probe.send_demo_test',return_value=entry) as send,patch('profit_exit.monitor_profit',return_value=closed) as monitor,patch.object(session,'bounded_history',return_value=rows+[live]),patch.object(session,'demo_balance',return_value=(800,4)),patch.object(session.time,'sleep'):
    result=session.run_session(client,'EURUSD-OTC',t,lambda _:None,lambda _:None)
   self.assertEqual(send.call_count,1);self.assertTrue(send.call_args.kwargs['take_profit_8']);self.assertEqual(send.call_args.kwargs['direction'],'call')
   self.assertEqual(monitor.call_count,1);self.assertEqual(result['automation_status'],'META_ATINGIDA');self.assertFalse(session.change()['active'])
