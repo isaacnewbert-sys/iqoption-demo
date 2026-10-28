@@ -50,7 +50,7 @@ class ProfitTracker:
         if not isinstance(body,dict):return
         if self.close_request_id and rid==self.close_request_id and isinstance(body.get('success'),bool):self.close_ack=body['success']
         if name in ('position-changed','portfolio.position-changed'):self.ingest_position(body)
-        if rid.startswith('tp8-positions-'):
+        if rid.startswith(('tp8-positions-','tp8-history-')):
             for row in body.get('positions',[]):self.ingest_position(row)
         if name in ('positions-state','portfolio.positions-state') and self.position:
             for row in body.get('positions',[]):
@@ -107,7 +107,12 @@ def monitor_profit(client,entry,progress=lambda _:None,update=lambda _:None,trac
     while time.monotonic()<deadline:
         now=time.monotonic();server_now=client.api.timesync.server_timestamp
         if now-last_lookup>=3:
-            request_positions();last_lookup=now
+            request_positions()
+            # Open-position lists omit expired/sold positions. Recover the broker's
+            # terminal record without inferring a result from a missing position.
+            if server_now>=expiry or close_pending:
+                client.api.send_websocket_request('sendMessage',{'name':'portfolio.get-history-positions','body':{'instrument_types':['digital-option'],'limit':30,'offset':0,'start':0,'end':0,'user_balance_id':tracker.balance_id}},request_id='tp8-history-'+uuid.uuid4().hex)
+            last_lookup=now
         pos=tracker.position
         if pos and pos['status']=='closed':
             reason=pos.get('close_reason')
@@ -149,3 +154,31 @@ def monitor_profit(client,entry,progress=lambda _:None,update=lambda _:None,trac
         time.sleep(.2)
     result['monitor_status']='MONITOR_FINALIZADO_SEM_CONFIRMACAO_DE_ENCERRAMENTO'
     update(result);return result
+
+
+def audit_history(client):
+    """Read-only demo history; never clears session locks or submits orders."""
+    from auto_session import demo_balance
+    client.change_balance('PRACTICE')
+    _,bid=demo_balance(client)
+    rid='tp8-audit-'+uuid.uuid4().hex
+    class Inbox:
+        rows=None
+        def receive(self,event):
+            if event.get('request_id')==rid and isinstance(event.get('msg'),dict) and isinstance(event['msg'].get('positions'),list):self.rows=event['msg']['positions']
+    inbox=Inbox();old=client.trace.profit_tracker;client.trace.profit_tracker=inbox
+    try:
+        client.api.send_websocket_request('sendMessage',{'name':'portfolio.get-history-positions','body':{'instrument_types':['digital-option'],'limit':30,'offset':0,'start':0,'end':0,'user_balance_id':bid}},request_id=rid)
+        deadline=time.monotonic()+8
+        while inbox.rows is None and time.monotonic()<deadline:time.sleep(.05)
+        rows=[]
+        for row in inbox.rows or []:
+            if not isinstance(row,dict) or row.get('instrument_type')!='digital-option' or row.get('user_balance_id')!=bid or row.get('status')!='closed':continue
+            raw=row.get('raw_event',{});raw=raw.get('digital_options_position_changed1',raw) if isinstance(raw,dict) else {}
+            ids=raw.get('order_ids',row.get('order_ids',[])) if isinstance(raw,dict) else []
+            pnl=number(row.get('pnl_realized'))
+            if not isinstance(ids,list) or pnl is None:continue
+            for oid in ids:
+                if isinstance(oid,int) and not isinstance(oid,bool):rows.append({'order_id':oid,'status':'closed','pnl_realized':str(pnl),'amount':str(number(row.get('invest'))),'asset_id':row.get('active_id')})
+        return {'account':'PRACTICE','orders_sent':0,'history_received':inbox.rows is not None,'closed_orders':rows}
+    finally:client.trace.profit_tracker=old
