@@ -8,7 +8,8 @@ import sys
 import re
 import time
 
-VERSION = 'server-v26-three-positions'
+VERSION = 'server-v28-multi-market'
+from settings import TRADE_AMOUNT,BASKET_MODES
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -19,7 +20,7 @@ class WireTrace:
         self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]; self.instrument_schema=[]; self.instruments_raw_count=0; self.subscription_acks={}
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
         self.strategy_candles={};self.strategy_received=0;self.strategy_events=0;self.strategy_rejected=0;self.strategy_schema=[]
-        self.profit_tracker=None; self.order_request_id=None; self.order_reply=None; self.order_attempted=False
+        self.market_hub=None;self.profit_tracker=None; self.order_request_id=None; self.order_reply=None; self.order_attempted=False
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
         self.new_packets=[]; self.secrets=[]; self.subscription_responses=[]; self.request_id="spotlab-readonly-digital-5m"
@@ -29,6 +30,7 @@ class WireTrace:
         try:
             event=json.loads(payload) if isinstance(payload,(str,bytes,bytearray)) else payload
             if not isinstance(event,dict): return
+            if self.market_hub:self.market_hub.receive(event)
             if self.profit_tracker:self.profit_tracker.receive(event)
             name=event.get('name'); body=event.get('msg')
             # Fixed vocabulary only; unknown event names and arbitrary payloads stay private.
@@ -325,7 +327,7 @@ def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None,
     if positions:
         allowed=allowed_positions() if callable(allowed_positions) else []
         def owned(p):
-            return isinstance(p,dict) and p.get('user_balance_id')==balance_id and p.get('active_id')==trace.asset_id and p.get('instrument_type')=='digital-option' and any(p.get('id')==a.get('id') and p.get('external_id')==a.get('external_id') for a in allowed)
+            return isinstance(p,dict) and p.get('user_balance_id')==balance_id and p.get('instrument_type')=='digital-option' and any(p.get('id')==a.get('id') and p.get('external_id')==a.get('external_id') and p.get('active_id')==a.get('active_id') for a in allowed)
         if not allowed or not all(owned(p) for p in positions):return blocked('BLOQUEADO_POSICAO_DIGITAL_EXISTENTE')
     contracts=verified_contracts(trace,client.api.timesync.server_timestamp)
     contract=next((c for c in contracts if c['direction']==direction),None)
@@ -340,9 +342,9 @@ def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None,
     trace.order_request_id='demo-test-'+uuid.uuid4().hex
     trace.order_attempted=True
     payload={'name':'digital-options.place-digital-option','version':'3.0','body':{
-        'amount':'1','asset_id':trace.asset_id,'instrument_id':contract['symbol'],
+        'amount':str(TRADE_AMOUNT),'asset_id':trace.asset_id,'instrument_id':contract['symbol'],
         'instrument_index':int(instrument['index']),'user_balance_id':int(balance_id)}}
-    result={'order_status':'ENVIO_INCERTO_NAO_REPETIR','orders_sent':None,'order_attempted':True,'amount':1,'direction':direction,'account':'PRACTICE','expiration_timestamp':instrument['expiration'],'early_sell_verified':False}
+    result={'order_status':'ENVIO_INCERTO_NAO_REPETIR','orders_sent':None,'order_attempted':True,'amount':TRADE_AMOUNT,'pair':trace.pair,'direction':direction,'account':'PRACTICE','expiration_timestamp':instrument['expiration'],'early_sell_verified':False}
     try:
         client.api.send_websocket_request('sendMessage',payload,request_id=trace.order_request_id)
         deadline=time.monotonic()+8
@@ -379,7 +381,14 @@ def worker(queue, email, password, pair, test_order=False,take_profit_8=False,di
             progress("Conexão inicial aceita; verificando conta")
             if automation_token:
                 from auto_session import run_session
-                queue.put(run_session(client,pair,automation_token,progress,lambda r:queue.put({'trade_update':r})))
+                if pair in BASKET_MODES:
+                    from basket import run_basket_session
+                    queue.put(run_basket_session(client,pair,automation_token,progress,lambda r:queue.put({'trade_update':r})))
+                else:queue.put(run_session(client,pair,automation_token,progress,lambda r:queue.put({'trade_update':r})))
+                return
+            if pair in BASKET_MODES:
+                from basket import inspect_basket
+                queue.put(inspect_basket(client,pair,progress))
                 return
             result = inspect_client(client,pair,progress)
             if not test_order and result.get('contracts_verified'):
@@ -390,7 +399,7 @@ def worker(queue, email, password, pair, test_order=False,take_profit_8=False,di
                 result['analysis']['history_bars_received']=len(rows)
                 result['analysis']['live_bars_received']=len(trace.strategy_candles)
             if test_order:
-                progress('Validando conta e condições para uma ordem demonstrativa de 1 unidade')
+                progress('Validando conta e condições para uma ordem demonstrativa de 100 unidades')
                 result.update(send_demo_test(client,take_profit_8=take_profit_8,direction=direction))
                 if take_profit_8 and result.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
                     from profit_exit import monitor_profit
