@@ -1,6 +1,7 @@
 """PRACTICE-only take-profit based on the broker's position valuation, not asset candles."""
 import time,math,uuid
 from decimal import Decimal,InvalidOperation
+from settings import TRADE_AMOUNT
 
 def number(value):
     if isinstance(value,bool):return None
@@ -10,7 +11,9 @@ def number(value):
     except (InvalidOperation,ValueError,TypeError):return None
 
 class ProfitTracker:
-    def __init__(self,balance_id,asset_id):
+    def __init__(self,balance_id,asset_id,amount=1):
+        self.expected_investment=number(amount)
+        if self.expected_investment is None or self.expected_investment<=0:raise ValueError("Invalid expected stake")
         self.balance_id=balance_id;self.asset_id=asset_id;self.order_id=None
         self.position=None;self.pending=[];self.metrics=None
         self.close_request_id=None;self.close_ack=None;self.close_attempts=0
@@ -32,7 +35,7 @@ class ProfitTracker:
         if not isinstance(row.get('external_id'),int) or isinstance(row['external_id'],bool) or row['external_id']<=0:return
         if not isinstance(row.get('id'),str) or len(row['id'])>128:return
         invest=number(row.get('invest'))
-        if invest is None or invest!=Decimal('1'):return
+        if invest is None or invest!=self.expected_investment:return
         status=row.get('status')
         if status not in ('open','closed'):return
         safe={k:row.get(k) for k in ('external_id','id','active_id','user_balance_id','status','invest','close_profit','close_reason','pnl_realized','pnl_net')}
@@ -74,10 +77,11 @@ class ProfitTracker:
 
 def prepare_tracking(client,tracker=None):
     if client.get_balance_mode()!='PRACTICE':return False
+    if tracker is not None and tracker.expected_investment!=number(TRADE_AMOUNT):return False
     profile=client.get_profile_ansyc();user_id=profile.get('user_id',profile.get('id'))
     if not isinstance(user_id,int) or isinstance(user_id,bool) or user_id<=0:return False
     trace=client.trace
-    if tracker is None:trace.profit_tracker=ProfitTracker(client.get_balance_id(),trace.asset_id)
+    if tracker is None:trace.profit_tracker=ProfitTracker(client.get_balance_id(),trace.asset_id,amount=TRADE_AMOUNT)
     specs=[('tp8-changed','portfolio.position-changed','3.0',{'routingFilters':{'user_id':user_id}}),('tp8-state','portfolio.positions-state','1.0',None)]
     for suffix,name,version,params in specs:
         msg={'name':name,'version':version}
