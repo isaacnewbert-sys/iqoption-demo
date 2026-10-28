@@ -18,3 +18,8 @@ Panel controls:
 - Preparar nova sessão (explicitly clears the previous session record only when inactive and not uncertain)
 
 Validation: python -m unittest test_regime_strategy.py test_multi_position.py test_strategy_session.py test_profit_exit.py test_demo_order.py test_fast_diagnostics.py test_panel_state.py
+
+
+## Dashboard v27
+
+Responsive authenticated dashboard with session metrics, target progress, independent position cards, market context, filter states, and the last 20 settled journal rows. Numbers remain unavailable until actual session data exists; no example market data is shipped. Values use the account currency without assuming BRL or USD. API responses are rendered as text; technical JSON and manual test controls are collapsed by default. The existing start/pause/new-session and manual test endpoints remain unchanged. Browser QA covered widths 320, 360, 412, 768 and 1440 pixels, all six controls using mock responses only, offline blocking and HTML escaping. No broker orders were sent during UI validation.
