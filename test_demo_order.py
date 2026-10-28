@@ -25,7 +25,7 @@ class Tests(unittest.TestCase):
  def setUp(self):self.c=Client()
  def test_demo_only(self):
   r=send_demo_test(self.c);self.assertEqual(r['orders_sent'],1);self.assertEqual(r['order_id'],99)
-  self.assertEqual(len(self.c.api.calls),1);body=self.c.api.calls[0][1]['body'];self.assertEqual(body['amount'],'1');self.assertEqual(body['user_balance_id'],1234);self.assertEqual(body['asset_id'],1861)
+  self.assertEqual(len(self.c.api.calls),1);body=self.c.api.calls[0][1]['body'];self.assertEqual(body['amount'],'100');self.assertEqual(body['user_balance_id'],1234);self.assertEqual(body['asset_id'],1861)
  def test_put_uses_broker_put_symbol(self):
   r=send_demo_test(self.c,direction='put')
   self.assertEqual(r['direction'],'put');self.assertEqual(r['orders_sent'],1)
