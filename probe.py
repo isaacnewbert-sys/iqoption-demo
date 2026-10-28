@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v23-auto-session'
+VERSION = 'server-v24-two-positions'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -294,7 +294,7 @@ def inspect_client(client, pair, progress=lambda stage: None):
             'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if contracts else ('ATIVO_NAO_LISTADO_NO_CATALOGO_DIGITAL' if trace.catalog_received and not trace.catalog_match else 'CONTRATOS_5M_NAO_CONFIRMADOS'),
             'websocket':trace.summary()}
 
-def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None):
+def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None,tracker=None,allowed_positions=None):
     """One fixed-size demo CALL or PUT. Never retry an uncertain submission."""
     trace=client.trace
     blocked=lambda reason:{'order_status':reason,'orders_sent':0,'order_attempted':False}
@@ -307,7 +307,8 @@ def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None)
     if not balance:return blocked('BLOQUEADO_SALDO_DEMO_NAO_CONFIRMADO')
     if take_profit_8:
         from profit_exit import prepare_tracking
-        if not prepare_tracking(client):return blocked('BLOQUEADO_MONITOR_LUCRO_NAO_CONFIRMADO')
+        ready=prepare_tracking(client) if tracker is None else prepare_tracking(client,tracker=tracker)
+        if not ready:return blocked('BLOQUEADO_MONITOR_LUCRO_NAO_CONFIRMADO')
     # Bound the SDK's normally unbounded position lookup. Unknown schema blocks sending.
     client.api.positions=None
     client.api.get_positions('digital-option')
@@ -318,7 +319,11 @@ def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None)
     body=response.get('msg',{})
     positions=body.get('positions') if isinstance(body,dict) else None
     if not isinstance(positions,list):return blocked('BLOQUEADO_FORMATO_POSICOES')
-    if positions:return blocked('BLOQUEADO_POSICAO_DIGITAL_EXISTENTE')
+    if positions:
+        allowed=allowed_positions() if callable(allowed_positions) else []
+        def owned(p):
+            return isinstance(p,dict) and p.get('user_balance_id')==balance_id and p.get('active_id')==trace.asset_id and p.get('instrument_type')=='digital-option' and any(p.get('id')==a.get('id') and p.get('external_id')==a.get('external_id') for a in allowed)
+        if not allowed or not all(owned(p) for p in positions):return blocked('BLOQUEADO_POSICAO_DIGITAL_EXISTENTE')
     contracts=verified_contracts(trace,client.api.timesync.server_timestamp)
     contract=next((c for c in contracts if c['direction']==direction),None)
     if not contract:return blocked('BLOQUEADO_SEM_CONTRATO_5M_VALIDO')
