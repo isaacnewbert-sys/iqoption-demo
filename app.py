@@ -3,6 +3,7 @@ from flask import Flask,request,Response,jsonify
 from pathlib import Path
 from probe import VERSION
 from auto_session import MAX_OPEN_POSITIONS
+from settings import TRADE_AMOUNT,ALLOWED_MARKETS,SINGLE_PAIRS,BASKET_MODES
 app=Flask(__name__)
 state={'stage':'Aguardando teste','started_at':None,'running':False,'result':None,'demo_test_orders_enabled':True,'real_orders_enabled':False}
 HOLD_FILE='/tmp/iq-demo-test-hold.json'
@@ -63,17 +64,17 @@ def headers(r):
 @app.get('/health')
 def health():
  current=snapshot()
- return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_DEMO_ONLY','automatic_demo_available':True,'max_positions':MAX_OPEN_POSITIONS,'demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v27-dashboard','diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
+ return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_DEMO_ONLY','automatic_demo_available':True,'max_positions':MAX_OPEN_POSITIONS,'trade_amount':TRADE_AMOUNT,'demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v28-multi-market','diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
 @app.get('/')
 def index():
- return Path(__file__).with_name('dashboard.html').read_text(encoding='utf-8').replace('__MAX_POSITIONS__',str(MAX_OPEN_POSITIONS))
+ return Path(__file__).with_name('dashboard.html').read_text(encoding='utf-8').replace('__MAX_POSITIONS__',str(MAX_OPEN_POSITIONS)).replace('__TRADE_AMOUNT__',str(TRADE_AMOUNT))
 @app.get('/status')
 def status():
  current=snapshot()
  from auto_session import change
  session=change()
  current['session']={k:session.get(k) for k in ('initial_balance','target','realized','target_reached','active','stop','uncertain','submission_pending','max_positions','pair')}
- current['journal']=[{k:r.get(k) for k in ('order_id','direction','pnl','setup','regime')} for r in session.get('ledger',[])[-20:]]
+ current['journal']=[{k:r.get(k) for k in ('order_id','direction','pnl','setup','regime','pair','amount')} for r in session.get('ledger',[])[-20:]]
  current['trades_completed']=len(session.get('ledger',[]))
  return jsonify(current)
 def run_process(args,timeout,job_id=None):
@@ -109,7 +110,7 @@ def run_process(args,timeout,job_id=None):
     if time.monotonic()-last_trade_log>=10:
      print('IQ_TP8_UPDATE '+json.dumps({k:trade.get(k) for k in ('order_id','order_status','monitor_status','broker_sell_profit','broker_pnl_net','broker_pnl','net_profit','profit_pct','trigger_profit_pct','close_attempts','early_sell_verified')}),flush=True)
      if isinstance(trade.get('positions'),list):print('IQ_MULTI_POSITION_UPDATE '+json.dumps({'open_positions':trade.get('open_positions'),'positions':[{k:p.get(k) for k in ('order_id','direction','monitor_status','profit_pct','broker_pnl_realized','monitor_finished')} for p in trade['positions'][-20:]],'session':{k:trade.get('session',{}).get(k) for k in ('realized','target_reached','uncertain')}}),flush=True)
-     if trade.get('automatic_demo'):print('IQ_ANALYSIS '+json.dumps({k:trade.get(k) for k in ('requested_pair','pair','asset_id','analysis','feed','execution_checks','last_entry','blocking_reason','open_positions')}),flush=True)
+     if trade.get('automatic_demo'):print('IQ_ANALYSIS '+json.dumps({k:trade.get(k) for k in ('requested_pair','pair','asset_id','analysis','feed','execution_checks','last_entry','blocking_reason','open_positions','ranking','selected_pair','last_selection')}),flush=True)
      last_trade_log=time.monotonic()
    elif isinstance(message,dict) and 'result' in message:result=message
   p.wait(timeout=max(.01,deadline-time.monotonic()))
@@ -176,8 +177,8 @@ def job(test_order=False,job_id=None,pair="EURUSD",take_profit_8=False,direction
 
 @app.post('/run')
 def run():
- pair=(request.get_json(silent=True) or {}).get('pair','EURUSD')
- if pair not in ('EURUSD','EURUSD-OTC'):return Response('Ativo inválido.',400)
+ pair=(request.get_json(silent=True) or {}).get('pair','MAJORS')
+ if pair not in ALLOWED_MARKETS:return Response('Ativo inválido.',400)
  if not os.environ.get('IQ_EMAIL') or not os.environ.get('IQ_PASSWORD'):return Response('Configure IQ_EMAIL e IQ_PASSWORD no Render.',409)
  with lock:
   snapshot()
@@ -188,7 +189,7 @@ def run():
 @app.post('/demo-order')
 def demo_order():
  pair=(request.get_json(silent=True) or {}).get('pair','EURUSD')
- if pair not in ('EURUSD','EURUSD-OTC'):return Response('Ativo inválido.',400)
+ if pair not in SINGLE_PAIRS:return Response('Ativo inválido.',400)
  direction=(request.get_json(silent=True) or {}).get('direction','call')
  if direction not in ('call','put'):return Response('Direção inválida.',400)
  return schedule_demo_order(pair,direction)
@@ -212,13 +213,13 @@ def schedule_demo_order(pair,direction="call"):
   try:token=begin_job(True)
   except RuntimeError:return Response('Já existe um teste em andamento.',409)
  threading.Thread(target=job,args=(True,token,pair,True,direction),daemon=True).start()
- return {'started':True,'account':'PRACTICE','amount':1,'direction':direction,'real_orders_enabled':False},202
+ return {'started':True,'account':'PRACTICE','amount':TRADE_AMOUNT,'direction':direction,'real_orders_enabled':False},202
 
 @app.post('/automation/start')
 def automation_start():
  from auto_session import claim
- pair=(request.get_json(silent=True) or {}).get('pair','EURUSD')
- if pair not in ('EURUSD','EURUSD-OTC'):return Response('Ativo inválido.',400)
+ pair=(request.get_json(silent=True) or {}).get('pair','MAJORS')
+ if pair not in ALLOWED_MARKETS:return Response('Ativo inválido.',400)
  if not all(os.environ.get(k) for k in ('IQ_EMAIL','IQ_PASSWORD')):return Response('Configure credenciais.',409)
  with lock:
   if snapshot()['running']:return Response('Já existe operação ou diagnóstico em andamento.',409)
@@ -231,7 +232,7 @@ def automation_start():
   except RuntimeError:return Response('Sessão bloqueada: ativa, incerta, meta atingida ou ativo diferente.',409)
   token=begin_job(True)
  threading.Thread(target=job,args=(True,token,pair,True,'call',session_token),daemon=True).start()
- return {'started':True,'scope':'PRACTICE_AUTOMATIC','amount':1,'target_session_pct':1,'target_trade_pct':8,'max_positions':MAX_OPEN_POSITIONS},202
+ return {'started':True,'scope':'PRACTICE_AUTOMATIC','amount':TRADE_AMOUNT,'target_session_pct':1,'target_trade_pct':8,'max_positions':MAX_OPEN_POSITIONS},202
 
 @app.post('/automation/new')
 def automation_new():
