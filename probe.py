@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v22-call-put'
+VERSION = 'server-v23-auto-session'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -18,6 +18,7 @@ class WireTrace:
     def __init__(self):
         self.catalog_received=False; self.catalog_match=None; self.catalog_assets=[]; self.instruments_received=False; self.instruments=[]; self.instrument_schema=[]; self.instruments_raw_count=0; self.subscription_acks={}
         self.asset_id=None; self.pair=None; self.candles=[]; self.event_counts={}; self.started_at=0
+        self.strategy_candles={};self.strategy_received=0
         self.profit_tracker=None; self.order_request_id=None; self.order_reply=None; self.order_attempted=False
         self.frames=0; self.quotes=[]; self.parser_errors={}; self.errors=0
         self.responses=0; self.rejections=0; self.received_at=0
@@ -63,6 +64,12 @@ class WireTrace:
                     self.instruments.append(safe)
                 self.instruments=self.instruments[-30:]
             if name=='candle-generated' and isinstance(body,dict) and body.get('active_id')==self.asset_id:
+                from strategy import candle
+                parsed=candle(body)
+                if parsed:
+                    self.strategy_candles[parsed['from']]=parsed
+                    self.strategy_candles=dict(sorted(self.strategy_candles.items())[-120:])
+                    self.strategy_received=time.monotonic()
                 import math
                 close=body.get('close')
                 if isinstance(close,(int,float)) and not isinstance(close,bool) and math.isfinite(close) and close>0:
@@ -287,7 +294,7 @@ def inspect_client(client, pair, progress=lambda stage: None):
             'status':'CONTRATOS_5M_RECEBIDOS_EXECUCAO_PENDENTE' if contracts else ('ATIVO_NAO_LISTADO_NO_CATALOGO_DIGITAL' if trace.catalog_received and not trace.catalog_match else 'CONTRATOS_5M_NAO_CONFIRMADOS'),
             'websocket':trace.summary()}
 
-def send_demo_test(client,take_profit_8=False,direction="call"):
+def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None):
     """One fixed-size demo CALL or PUT. Never retry an uncertain submission."""
     trace=client.trace
     blocked=lambda reason:{'order_status':reason,'orders_sent':0,'order_attempted':False}
@@ -320,6 +327,7 @@ def send_demo_test(client,take_profit_8=False,direction="call"):
     if instrument['expiration']-instrument['deadtime']-client.api.timesync.server_timestamp<15:return blocked('BLOQUEADO_VENCIMENTO_PROXIMO')
     # Recheck account immediately before the only write; never construct a contract ID.
     if client.get_balance_mode()!='PRACTICE' or client.get_balance_id()!=balance_id:return blocked('BLOQUEADO_CONTA_ALTERADA')
+    if entry_guard is not None and not entry_guard():return blocked('BLOQUEADO_SINAL_OU_SESSAO_ALTERADA')
     import uuid
     trace.order_request_id='demo-test-'+uuid.uuid4().hex
     trace.order_attempted=True
@@ -339,7 +347,7 @@ def send_demo_test(client,take_profit_8=False,direction="call"):
         pass
     return result
 
-def worker(queue, email, password, pair, test_order=False,take_profit_8=False,direction="call"):
+def worker(queue, email, password, pair, test_order=False,take_profit_8=False,direction="call",automation_token=None):
     # The old SDK may write authentication details on errors; suppress its logs.
     logging.disable(logging.CRITICAL)
     import contextlib
@@ -361,7 +369,18 @@ def worker(queue, email, password, pair, test_order=False,take_profit_8=False,di
                 queue.put({'error':('Autenticação em duas etapas solicitada. Este diagnóstico não implementa a etapa de 2FA.' if _reason=='2FA' else 'Login não concluído; causa não confirmada. Confira acesso no aplicativo oficial. Nenhuma ordem enviada.')})
                 return
             progress("Conexão inicial aceita; verificando conta")
+            if automation_token:
+                from auto_session import run_session
+                queue.put(run_session(client,pair,automation_token,progress,lambda r:queue.put({'trade_update':r})))
+                return
             result = inspect_client(client,pair,progress)
+            if not test_order and result.get('contracts_verified'):
+                from auto_session import bounded_history
+                from strategy import analyze
+                rows=bounded_history(client)
+                result['analysis']=analyze(rows+list(trace.strategy_candles.values()),client.api.timesync.server_timestamp)
+                result['analysis']['history_bars_received']=len(rows)
+                result['analysis']['live_bars_received']=len(trace.strategy_candles)
             if test_order:
                 progress('Validando conta e condições para uma ordem demonstrativa de 1 unidade')
                 result.update(send_demo_test(client,take_profit_8=take_profit_8,direction=direction))
