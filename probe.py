@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v25-regime-analysis'
+VERSION = 'server-v26-three-positions'
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
