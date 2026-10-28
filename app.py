@@ -61,12 +61,16 @@ def headers(r):
 @app.get('/health')
 def health():
  current=snapshot()
- return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_TEST_ONLY','demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v22-call-put','diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
+ return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_DEMO_ONLY','automatic_demo_available':True,'demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v23-auto-session','diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
 @app.get('/')
-def index():return '''<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>IQ Demo</title><style>body{font:16px system-ui;background:#0a1524;color:#e5edf7;max-width:750px;margin:auto;padding:24px}button{padding:16px;background:#27c89c;border:0;border-radius:10px;font:inherit}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#15263d;padding:18px;border-radius:12px}</style><h1>IQ Demo · servidor</h1><p>Painel v22 · catálogo v3 · clique para iniciar o teste.</p><p>Teste de ordem habilitado somente na conta PRACTICE. Envio depende de contrato e cotações válidas. Conta real desativada.</p><p>Ativo selecionado acima · grade de vencimentos de 5 minutos · tentativa de recompra ao atingir lucro líquido de +8%, sem stop por perda.</p><p><label>Ativo do teste <select id="pair"><option value="EURUSD">EUR/USD Digital</option><option value="EURUSD-OTC">EUR/USD OTC Digital</option></select></label></p><p>OTC é um produto distinto. A seleção acima determina o ativo do diagnóstico e da ordem demonstrativa.</p><button onclick="run()">Testar conexão e contratos</button><p><button onclick="demoOrder('call')">Comprar · CALL demo · alvo +8%</button> <button style="background:#ef7373" onclick="demoOrder('put')">Vender · PUT demo · alvo +8%</button></p><p>Teste de execução: 1 unidade do saldo virtual, grade de 5 minutos. Sem sinal de estratégia. Após a entrada, o servidor monitora o lucro de recompra e tenta fechar em +8%. Se não atingir o alvo, segue até o vencimento. Fechamento depende da confirmação da IQ e o lucro realizado pode variar. Não repita se o envio ficar incerto.</p><p id="status"></p><pre id="out">Aguardando teste.</pre><p>Credenciais IQ Option somente nas variáveis protegidas do Render. Não são solicitadas nesta página. Resultados temporários são perdidos ao reiniciar. Hospedagem gratuita pode suspender por inatividade; não serve para operação contínua.</p><script>function resultLabel(s){let r=s.result?.result||s.result;if(!r)return 'Pronto para testar';if(r.early_sell_verified)return 'Recompra antecipada confirmada pela IQ';if(r.monitor_status==='POSICAO_ENCERRADA')return 'Posição encerrada pela IQ · '+(r.close_reason||'');if(r.order_status==='ORDEM_DEMO_CONFIRMADA')return 'Ordem demonstrativa confirmada · ID '+r.order_id;if(r.order_status?.startsWith('BLOQUEADO'))return 'Ordem NÃO enviada · '+r.order_status;if(r.order_status==='ENVIO_INCERTO_NAO_REPETIR')return 'Envio incerto: confira a conta PRACTICE na IQ';if(r.order_status==='ORDEM_DEMO_RECUSADA')return 'Ordem recusada pela IQ';if(r.contracts_verified)return 'Conexão e contratos confirmados';if(r.login_confirmed)return 'Conexão confirmada, mas sem contrato válido para este ativo';return 'Teste terminou sem confirmar a conexão'}let refreshing=false;async function refresh(){if(refreshing)return;refreshing=true;try{let r=await fetch('/status',{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!r.ok)return;let s=await r.json();document.querySelectorAll('button,select').forEach(b=>b.disabled=s.running);let elapsed=s.elapsed_seconds||0;document.getElementById('status').textContent=s.running?(s.stage+' · '+elapsed+' s'):resultLabel(s);document.getElementById('out').textContent=s.result?JSON.stringify(s.result,null,2):'Clique em Testar conexão e contratos.'}catch{document.getElementById('status').textContent='Sem resposta do servidor. Reconectando…'}finally{refreshing=false}}async function demoOrder(direction){let r=await fetch('/demo-order',{method:'POST',headers:{'X-Demo-Panel':'1','Content-Type':'application/json'},body:JSON.stringify({pair:document.getElementById('pair').value,direction})});if(!r.ok)document.getElementById('status').textContent=await r.text();else refresh()}async function run(){let r=await fetch('/run',{method:'POST',headers:{'X-Demo-Panel':'1','Content-Type':'application/json'},body:JSON.stringify({pair:document.getElementById('pair').value})});if(!r.ok)document.getElementById('status').textContent=await r.text();refresh()}setInterval(refresh,1000);refresh()</script></html>'''
+def index():return '''<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>IQ Demo</title><style>body{font:16px system-ui;background:#0a1524;color:#e5edf7;max-width:750px;margin:auto;padding:24px}button{padding:16px;background:#27c89c;border:0;border-radius:10px;font:inherit}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#15263d;padding:18px;border-radius:12px}</style><h1>IQ Demo · servidor</h1><p>Painel v23 · catálogo v3 · clique para iniciar o teste.</p><p>Teste de ordem habilitado somente na conta PRACTICE. Envio depende de contrato e cotações válidas. Conta real desativada.</p><p>Ativo selecionado acima · grade de vencimentos de 5 minutos · tentativa de recompra ao atingir lucro líquido de +8%, sem stop por perda.</p><p><label>Ativo do teste <select id="pair"><option value="EURUSD">EUR/USD Digital</option><option value="EURUSD-OTC">EUR/USD OTC Digital</option></select></label></p><p>OTC é um produto distinto. A seleção acima determina o ativo do diagnóstico e da ordem demonstrativa.</p><button onclick="run()">Testar conexão e contratos</button><p><button onclick="demoOrder('call')">Comprar · CALL demo · alvo +8%</button> <button style="background:#ef7373" onclick="demoOrder('put')">Vender · PUT demo · alvo +8%</button></p><p>Teste de execução: 1 unidade do saldo virtual, grade de 5 minutos. Sem sinal de estratégia. Após a entrada, o servidor monitora o lucro de recompra e tenta fechar em +8%. Se não atingir o alvo, segue até o vencimento. Fechamento depende da confirmação da IQ e o lucro realizado pode variar. Não repita se o envio ficar incerto.</p><hr><h2>Sessão automática demonstrativa</h2><p>Estratégia experimental de rejeição em suporte/resistência no 1 min, gatilho intravela e filtro de tendência no 5 min. Uma posição de 1 unidade virtual por vez. Meta: lucro realizado de 1% do saldo inicial fixo; saída por operação em +8%, sem stop de perda.</p><p><button onclick="autoStart()">Iniciar / retomar sessão demo automática</button> <button onclick="newSession()">Preparar nova sessão</button> <button id="stopAuto" onclick="autoStop()">Pausar novas entradas</button></p><p>A pausa deixa a posição aberta terminar. Sessão limitada a 6 horas; não reinicia automaticamente. Reinício ou implantação do servidor pode apagar a sessão; confira a IQ antes de iniciar outra. Nenhuma rentabilidade validada.</p><pre id="session">Sessão não iniciada</pre><p id="status"></p><pre id="out">Aguardando teste.</pre><p>Credenciais IQ Option somente nas variáveis protegidas do Render. Não são solicitadas nesta página. Resultados temporários são perdidos ao reiniciar. Hospedagem gratuita pode suspender por inatividade; não serve para operação contínua.</p><script>function resultLabel(s){if(s.session?.target_reached)return 'Meta de 1% atingida · novas entradas bloqueadas';let r=s.result?.result||s.result;if(!r)return 'Pronto para testar';if(r.early_sell_verified)return 'Recompra antecipada confirmada pela IQ';if(r.monitor_status==='POSICAO_ENCERRADA')return 'Posição encerrada pela IQ · '+(r.close_reason||'');if(r.order_status==='ORDEM_DEMO_CONFIRMADA')return 'Ordem demonstrativa confirmada · ID '+r.order_id;if(r.order_status?.startsWith('BLOQUEADO'))return 'Ordem NÃO enviada · '+r.order_status;if(r.order_status==='ENVIO_INCERTO_NAO_REPETIR')return 'Envio incerto: confira a conta PRACTICE na IQ';if(r.order_status==='ORDEM_DEMO_RECUSADA')return 'Ordem recusada pela IQ';if(r.contracts_verified)return 'Conexão e contratos confirmados';if(r.login_confirmed)return 'Conexão confirmada, mas sem contrato válido para este ativo';return 'Teste terminou sem confirmar a conexão'}let refreshing=false;async function refresh(){if(refreshing)return;refreshing=true;try{let r=await fetch('/status',{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!r.ok)return;let s=await r.json();document.querySelectorAll('button,select').forEach(b=>b.disabled=b.id==='stopAuto'?!s.session?.active:s.running);document.getElementById('session').textContent=JSON.stringify(s.session||{},null,2);let elapsed=s.elapsed_seconds||0;document.getElementById('status').textContent=s.running?(s.stage+' · '+elapsed+' s'):resultLabel(s);document.getElementById('out').textContent=s.result?JSON.stringify(s.result,null,2):'Clique em Testar conexão e contratos.'}catch{document.getElementById('status').textContent='Sem resposta do servidor. Reconectando…'}finally{refreshing=false}}async function newSession(){if(!confirm('Encerrar o registro da sessão anterior e preparar outra meta de 1%?'))return;let r=await fetch('/automation/new',{method:'POST',headers:{'X-Demo-Panel':'1'}});if(!r.ok)alert(await r.text());refresh()}async function autoStart(){let r=await fetch('/automation/start',{method:'POST',headers:{'X-Demo-Panel':'1','Content-Type':'application/json'},body:JSON.stringify({pair:document.getElementById('pair').value})});if(!r.ok)alert(await r.text());refresh()}async function autoStop(){let r=await fetch('/automation/stop',{method:'POST',headers:{'X-Demo-Panel':'1'}});if(!r.ok)alert(await r.text());refresh()}async function demoOrder(direction){let r=await fetch('/demo-order',{method:'POST',headers:{'X-Demo-Panel':'1','Content-Type':'application/json'},body:JSON.stringify({pair:document.getElementById('pair').value,direction})});if(!r.ok)document.getElementById('status').textContent=await r.text();else refresh()}async function run(){let r=await fetch('/run',{method:'POST',headers:{'X-Demo-Panel':'1','Content-Type':'application/json'},body:JSON.stringify({pair:document.getElementById('pair').value})});if(!r.ok)document.getElementById('status').textContent=await r.text();refresh()}setInterval(refresh,1000);refresh()</script></html>'''
 @app.get('/status')
 def status():
- return jsonify(snapshot())
+ current=snapshot()
+ from auto_session import change
+ session=change()
+ current['session']={k:session.get(k) for k in ('initial_balance','target','realized','target_reached','active','stop','uncertain')}
+ return jsonify(current)
 def run_process(args,timeout,job_id=None):
  """Stream only structured progress; kill the SDK child on the wall-clock deadline."""
  p=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1)
@@ -79,15 +83,18 @@ def run_process(args,timeout,job_id=None):
  deadline=time.monotonic()+timeout
  result=None
  last_trade_log=0
+ last_message=time.monotonic()
  try:
   while True:
    remaining=deadline-time.monotonic()
+   if '--automation-token' in args and time.monotonic()-last_message>45:raise subprocess.TimeoutExpired(args,45)
    if remaining<=0:raise subprocess.TimeoutExpired(args,timeout)
    try:line=lines.get(timeout=min(remaining,.25))
    except queue.Empty:continue
    if line is None:break
    try:message=json.loads(line)
    except (ValueError,TypeError):continue
+   if isinstance(message,dict) and ('progress' in message or 'trade_update' in message):last_message=time.monotonic()
    if isinstance(message,dict) and isinstance(message.get('progress'),str):
     if job_id:update_job(job_id,stage=message['progress'][:200])
     else:state['stage']=message['progress'][:200]
@@ -107,14 +114,18 @@ def run_process(args,timeout,job_id=None):
   except subprocess.TimeoutExpired:pass
   if p.stdout:p.stdout.close()
 
-def job(test_order=False,job_id=None,pair="EURUSD",take_profit_8=False,direction="call"):
+def job(test_order=False,job_id=None,pair="EURUSD",take_profit_8=False,direction="call",automation_token=None):
  try:
   args=[sys.executable,'runner.py','--pair',pair,'--direction',direction]+(['--demo-test-order'] if test_order else [])+(['--take-profit-8'] if take_profit_8 else [])
-  result=run_process(args,700 if take_profit_8 else (65 if test_order else 35),job_id)
+  if automation_token:args+=['--automation-token',automation_token]
+  result=run_process(args,22300 if automation_token else 700 if take_profit_8 else (65 if test_order else 35),job_id)
  except subprocess.TimeoutExpired:
   last_stage=snapshot()['stage']
   result={'error':'Tempo limite de '+str(700 if take_profit_8 else (65 if test_order else 35))+' segundos na etapa: '+last_stage+'. Processo encerrado.'}
  except Exception:result={'error':'Falha no diagnóstico; detalhes omitidos para preservar credenciais.'}
+ if automation_token and 'error' in result:
+  from auto_session import update
+  update(automation_token,active=False,uncertain=True)
  if test_order and 'error' in result:
   partial=snapshot().get('result')
   if isinstance(partial,dict) and isinstance(partial.get('result'),dict) and partial['result'].get('order_id'):
@@ -176,6 +187,9 @@ def demo_order():
  return schedule_demo_order(pair,direction)
 
 def schedule_demo_order(pair,direction="call"):
+ from auto_session import change
+ session=change()
+ if session.get('target_reached') or session.get('uncertain') or session.get('active'):return Response('Sessão ativa, incerta ou meta de 1% atingida. Novas entradas manuais bloqueadas.',409)
  if direction not in ('call','put'):return Response('Direção inválida.',400)
  if not all(os.environ.get(k) for k in ('IQ_EMAIL','IQ_PASSWORD')):return Response('Configure as credenciais no Render.',409)
  with lock:
@@ -192,6 +206,43 @@ def schedule_demo_order(pair,direction="call"):
   except RuntimeError:return Response('Já existe um teste em andamento.',409)
  threading.Thread(target=job,args=(True,token,pair,True,direction),daemon=True).start()
  return {'started':True,'account':'PRACTICE','amount':1,'direction':direction,'real_orders_enabled':False},202
+
+@app.post('/automation/start')
+def automation_start():
+ from auto_session import claim
+ pair=(request.get_json(silent=True) or {}).get('pair','EURUSD')
+ if pair not in ('EURUSD','EURUSD-OTC'):return Response('Ativo inválido.',400)
+ if not all(os.environ.get(k) for k in ('IQ_EMAIL','IQ_PASSWORD')):return Response('Configure credenciais.',409)
+ with lock:
+  if snapshot()['running']:return Response('Já existe operação ou diagnóstico em andamento.',409)
+  try:
+   with open(HOLD_FILE) as f:hold=json.load(f).get('until',0)
+  except FileNotFoundError:hold=0
+  except Exception:return Response('Trava indisponível.',409)
+  if time.time()<hold:return Response('Aguarde a trava do último teste manual.',409)
+  try:session_token=claim(pair)
+  except RuntimeError:return Response('Sessão bloqueada: ativa, incerta, meta atingida ou ativo diferente.',409)
+  token=begin_job(True)
+ threading.Thread(target=job,args=(True,token,pair,True,'call',session_token),daemon=True).start()
+ return {'started':True,'scope':'PRACTICE_AUTOMATIC','amount':1,'target_session_pct':1,'target_trade_pct':8},202
+
+@app.post('/automation/new')
+def automation_new():
+ from auto_session import change
+ with lock:
+  if snapshot()['running']:return Response('Aguarde a operação terminar.',409)
+  def clear(s):
+   if s.get('active') or s.get('uncertain'):raise RuntimeError('busy')
+   s.clear()
+  try:change(clear)
+  except RuntimeError:return Response('Sessão ativa ou incerta: confira a IQ.',409)
+ return {'new_session_ready':True,'initial_balance':'Será registrado ao iniciar'},200
+
+@app.post('/automation/stop')
+def automation_stop():
+ from auto_session import change
+ change(lambda s:s.update(stop=True))
+ return {'stop_requested':True,'open_position':'Continua até +8% ou vencimento'},202
 
 @app.post('/release-demo-test')
 def release_demo_test():
@@ -212,7 +263,7 @@ def market_preflight():
    data=run_process([sys.executable,'runner.py','--pair',pair],35,job_id='release-preflight')
    result=data.get('result',{})
    ws=result.get('websocket',{})
-   summary={'pair':result.get('pair',pair),'contracts_verified':result.get('contracts_verified',False),'instrument_count':ws.get('instruments_raw_count',0),'order_sent':False,'contracts':result.get('contracts',[]),'parser_errors':ws.get('parser_exceptions',{})}
+   summary={'pair':result.get('pair',pair),'contracts_verified':result.get('contracts_verified',False),'instrument_count':ws.get('instruments_raw_count',0),'order_sent':False,'contracts':result.get('contracts',[]),'parser_errors':ws.get('parser_exceptions',{}),'analysis':result.get('analysis')}
   except Exception:summary={'pair':pair,'status':'READ_ONLY_CHECK_FAILED','order_sent':False}
   print('IQ_MARKET_PREFLIGHT '+json.dumps(summary),flush=True)
 
