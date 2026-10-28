@@ -91,6 +91,17 @@ class Tests(unittest.TestCase):
   with patch.object(session,'no_positions',return_value=True),patch('probe.inspect_client'),patch('probe.send_demo_test',return_value=entry),patch('profit_exit.monitor_profit',side_effect=monitor) as m,patch.object(session,'bounded_history',return_value=rows+[live]),patch.object(session,'demo_balance',return_value=(100,4)),patch.object(session.time,'sleep'):
    session.run_session(client,'EURUSD-OTC',t,lambda _:None,lambda _:None)
   self.assertEqual(m.call_count,1);self.assertEqual(session.change()['realized'],'-1');self.assertTrue(session.change()['stop'])
+ def test_external_position_block_explained_without_order(self):
+  import types
+  client=types.SimpleNamespace(trace=types.SimpleNamespace(asset_id=76),api=types.SimpleNamespace())
+  t=session.claim('EURUSD-OTC');updates=[]
+  with patch('probe.inspect_client'),patch.object(session,'no_positions',return_value=False),patch('probe.send_demo_test') as send:
+   result=session.run_session(client,'EURUSD-OTC',t,lambda _:None,updates.append)
+  send.assert_not_called();self.assertEqual(result['blocking_reason'],'POSICAO_DIGITAL_PREVIA_OU_CONSULTA_NAO_CONFIRMADA');self.assertFalse(session.change()['active'])
+ def test_setup_and_regime_are_recorded_for_evaluation(self):
+  t=session.claim('EURUSD-OTC');session.establish(t,100,4)
+  session.settle(t,dict(order_id=1,broker_pnl_realized=.08,monitor_status='POSICAO_ENCERRADA',setup='PULLBACK_TENDENCIA',regime='TENDENCIA_ALTA'))
+  self.assertEqual(session.change()['ledger'][0]['setup'],'PULLBACK_TENDENCIA')
  def test_live_wire_retains_ohlc_and_rejects_other_asset(self):
   rows,live,now=self.bars();t=WireTrace();t.asset_id=76
   t.receive({'name':'candle-generated','msg':dict(live,active_id=76)})
