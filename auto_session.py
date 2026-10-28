@@ -42,7 +42,7 @@ def settle(token,result):
  def f(s):
   if s.get('token')!=token:raise RuntimeError('Sessão mudou')
   if any(t['order_id']==oid for t in s.get('ledger',[])):return
-  ledger=s.get('ledger',[])+[{'order_id':oid,'pnl':str(pnl),'direction':result.get('direction')}]
+  ledger=s.get('ledger',[])+[{'order_id':oid,'pnl':str(pnl),'direction':result.get('direction'),'setup':result.get('setup'),'regime':result.get('regime')}]
   realized=sum((Decimal(t['pnl']) for t in ledger),Decimal(0))
   s.update(ledger=ledger,realized=str(realized),target_reached=bool(s.get('target_reached')) or realized>=Decimal(s['target']))
  return change(f)
@@ -110,7 +110,7 @@ def run_session(client,pair,token,progress,emit):
  from probe import inspect_client,send_demo_test
  from profit_exit import monitor_profit,ProfitTracker
  from strategy import analyze
- outcome={'account':'PRACTICE','automatic_demo':True,'orders_sent':0,'max_positions':2}
+ outcome={'account':'PRACTICE','automatic_demo':True,'orders_sent':0,'max_positions':2,'requested_pair':pair};history=[]
  group=TrackerGroup();book=PositionBook();threads=[];publication=threading.RLock();client.trace.profit_tracker=group
  original_send=getattr(client.api,'send_websocket_request',None);wire_lock=threading.RLock()
  if callable(original_send):
@@ -120,10 +120,12 @@ def run_session(client,pair,token,progress,emit):
  fields=('initial_balance','target','realized','target_reached','active','stop','uncertain','submission_pending','max_positions')
  def publish(**extra):
   with publication:
+   if 'analysis' in extra:outcome['analysis']=extra['analysis']
+   if 'last_entry' in extra:outcome['last_entry']=extra['last_entry']
    s=change();emit(dict(outcome,positions=book.snapshot(),open_positions=len(book.active()),session={k:s.get(k) for k in fields},**extra))
  def watch(entry,tracker,analysis):
   try:
-   result=monitor_profit(client,entry,progress,lambda r:(book.update(entry['order_id'],r),publish(analysis=analysis)),tracker=tracker,position_ids_provider=group.position_ids)
+   result=monitor_profit(client,entry,progress,lambda r:(book.update(entry['order_id'],r),publish()),tracker=tracker,position_ids_provider=group.position_ids)
    settle(token,result);book.update(entry['order_id'],result,done=True)
   except Exception:
    update(token,uncertain=True,stop=True)
@@ -132,7 +134,10 @@ def run_session(client,pair,token,progress,emit):
    group.remove(tracker);publish()
  try:
   inspect_client(client,pair,progress)
-  if not no_positions(client):raise RuntimeError('Posições prévias ou não confirmadas')
+  outcome['pair']=getattr(client.trace,'pair',pair);outcome['asset_id']=client.trace.asset_id
+  if not no_positions(client):
+   outcome['blocking_reason']='POSICAO_DIGITAL_PREVIA_OU_CONSULTA_NAO_CONFIRMADA'
+   raise RuntimeError('Posições prévias ou não confirmadas')
   balance,bid=demo_balance(client);establish(token,balance,bid)
   deadline=time.monotonic()+21600;last_history=0;history=[];used=set(change().get('used_signals',[]));last_trade=0
   if change().get('last_signal'):used.add(change()['last_signal'])
@@ -146,7 +151,10 @@ def run_session(client,pair,token,progress,emit):
    live=list(client.trace.strategy_candles.values())
    if not live or time.monotonic()-client.trace.strategy_received>3:analysis={'direction':None,'reason':'Cotação de vela atrasada ou formato ainda não confirmado'}
    else:analysis=analyze(history+live,now)
+   now_mono=time.monotonic()
+   outcome['feed']={'history_bars_received':len(history),'live_bars_received':len(live),'live_age_seconds':round(now_mono-client.trace.strategy_received,2) if client.trace.strategy_received else None,'candle_events':getattr(client.trace,'strategy_events',None),'rejected_candle_events':getattr(client.trace,'strategy_rejected',None),'candle_fields':getattr(client.trace,'strategy_schema',[])}
    eligible=book.can_enter(analysis.get('direction'))
+   outcome['execution_checks']={'signal_present':bool(analysis.get('direction')),'new_signal':analysis.get('signal_id') not in used,'cooldown_seconds_remaining':max(0,round(60-(now_mono-last_trade),1)),'capacity_and_direction':eligible,'session_target_reached':bool(s.get('target_reached')),'uncertain':bool(s.get('uncertain'))}
    progress('Analisando: '+analysis['reason']+(' · limite ou direção conflitante' if not eligible else ''));publish(analysis=analysis)
    if analysis.get('direction') and analysis.get('signal_id') not in used and time.monotonic()-last_trade>=60 and eligible:
     inspect_client(client,pair,progress)
@@ -163,6 +171,7 @@ def run_session(client,pair,token,progress,emit):
      return not stopped(token) and not state.get('target_reached') and not state.get('uncertain') and book.can_enter(fresh['direction']) and time.monotonic()-client.trace.strategy_received<=3 and latest.get('signal_id')==fresh['signal_id']
     entry=send_demo_test(client,take_profit_8=True,direction=fresh['direction'],entry_guard=entry_guard,tracker=tracker,allowed_positions=group.open_positions)
     used.add(fresh['signal_id']);last_trade=time.monotonic();update(token,last_signal=fresh['signal_id'],used_signals=sorted(used)[-500:])
+    entry.update(setup=fresh.get('setup'),regime=fresh.get('regime'),trigger=fresh.get('trigger'))
     if entry.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
      tracker.bind(entry['order_id']);book.add(entry);update(token,submission_pending=False)
      outcome['orders_sent']+=1
