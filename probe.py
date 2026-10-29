@@ -8,7 +8,7 @@ import sys
 import re
 import time
 
-VERSION = 'server-v29-history-recovery'
+VERSION = 'server-v30-persistent-memory'
 from settings import TRADE_AMOUNT,BASKET_MODES
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
