@@ -118,6 +118,8 @@ def monitor_profit(client,entry,progress=lambda _:None,update=lambda _:None,trac
             reason=pos.get('close_reason')
             sold=tracker.close_attempts>0 and tracker.close_ack is True and reason in ('default','sold','sell','manual','closed_by_user')
             result.update(monitor_status='FECHAMENTO_ANTECIPADO_CONFIRMADO' if sold else 'POSICAO_ENCERRADA',early_sell_verified=sold,close_reason=reason if isinstance(reason,str) and len(reason)<64 else 'omitted',broker_pnl_realized=pos.get('pnl_realized'),broker_close_profit=pos.get('close_profit'))
+            from learning import record_outcome
+            result['outcome_memory_recorded']=record_outcome(result)
             update(result);return result
         if pos and (subscribed_id!=pos['id'] or now-last_subscription>=45):
             client.api.send_websocket_request('sendMessage',{'name':'portfolio.subscribe-positions','version':'1.0','body':{'frequency':'frequent','ids':position_ids_provider() if position_ids_provider is not None else [pos['id']]}},request_id='tp8-watch-'+uuid.uuid4().hex)
@@ -179,6 +181,8 @@ def audit_history(client):
             pnl=number(row.get('pnl_realized'))
             if not isinstance(ids,list) or pnl is None:continue
             for oid in ids:
-                if isinstance(oid,int) and not isinstance(oid,bool):rows.append({'order_id':oid,'status':'closed','pnl_realized':str(pnl),'amount':str(number(row.get('invest'))),'asset_id':row.get('active_id')})
-        return {'account':'PRACTICE','orders_sent':0,'history_received':inbox.rows is not None,'closed_orders':rows}
+                if isinstance(oid,int) and not isinstance(oid,bool):rows.append({'order_id':oid,'status':'closed','pnl_realized':str(pnl),'amount':str(number(row.get('invest'))),'asset_id':row.get('active_id'),'shared_position_result':len(ids)!=1})
+        from learning import record_outcome
+        imported=sum(record_outcome({'account':'PRACTICE','balance_id':bid,'order_id':r['order_id'],'monitor_status':'POSICAO_ENCERRADA','broker_pnl_realized':r['pnl_realized']}) for r in rows if not r.get('shared_position_result'))
+        return {'memory_outcomes_recorded':imported,'account':'PRACTICE','orders_sent':0,'history_received':inbox.rows is not None,'closed_orders':rows}
     finally:client.trace.profit_tracker=old
