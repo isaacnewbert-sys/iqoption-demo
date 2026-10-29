@@ -155,9 +155,9 @@ def run_session(client,pair,token,progress,emit):
    now_mono=time.monotonic()
    outcome['feed']={'history_bars_received':len(history),'live_bars_received':len(live),'live_age_seconds':round(now_mono-client.trace.strategy_received,2) if client.trace.strategy_received else None,'candle_events':getattr(client.trace,'strategy_events',None),'rejected_candle_events':getattr(client.trace,'strategy_rejected',None),'candle_fields':getattr(client.trace,'strategy_schema',[])}
    eligible=book.can_enter(analysis.get('direction'))
-   outcome['execution_checks']={'signal_present':bool(analysis.get('direction')),'new_signal':analysis.get('signal_id') not in used,'cooldown_seconds_remaining':max(0,round(60-(now_mono-last_trade),1)),'capacity_and_direction':eligible,'session_target_reached':bool(s.get('target_reached')),'uncertain':bool(s.get('uncertain'))}
+   outcome['execution_checks']={'signal_present':bool(analysis.get('direction')),'new_signal':analysis.get('signal_id') not in used,'cooldown_seconds_remaining':max(0,round(2-(now_mono-last_trade),1)),'capacity_and_direction':eligible,'session_target_reached':bool(s.get('target_reached')),'uncertain':bool(s.get('uncertain'))}
    progress('Analisando: '+analysis['reason']+(' · limite ou direção conflitante' if not eligible else ''));publish(analysis=analysis)
-   if analysis.get('direction') and analysis.get('signal_id') not in used and time.monotonic()-last_trade>=60 and eligible:
+   if analysis.get('direction') and analysis.get('signal_id') not in used and time.monotonic()-last_trade>=2 and eligible:
     inspect_client(client,pair,progress)
     fresh=analyze(bounded_history(client)+list(client.trace.strategy_candles.values()),client.api.timesync.server_timestamp)
     if stopped(token):break
