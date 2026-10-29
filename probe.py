@@ -344,7 +344,7 @@ def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None,
     payload={'name':'digital-options.place-digital-option','version':'3.0','body':{
         'amount':str(TRADE_AMOUNT),'asset_id':trace.asset_id,'instrument_id':contract['symbol'],
         'instrument_index':int(instrument['index']),'user_balance_id':int(balance_id)}}
-    result={'order_status':'ENVIO_INCERTO_NAO_REPETIR','orders_sent':None,'order_attempted':True,'amount':TRADE_AMOUNT,'pair':trace.pair,'direction':direction,'account':'PRACTICE','expiration_timestamp':instrument['expiration'],'early_sell_verified':False}
+    result={'order_status':'ENVIO_INCERTO_NAO_REPETIR','orders_sent':None,'order_attempted':True,'amount':TRADE_AMOUNT,'pair':trace.pair,'direction':direction,'account':'PRACTICE','balance_id':balance_id,'asset_id':trace.asset_id,'expiration_timestamp':instrument['expiration'],'early_sell_verified':False}
     try:
         client.api.send_websocket_request('sendMessage',payload,request_id=trace.order_request_id)
         deadline=time.monotonic()+8
@@ -405,6 +405,8 @@ def worker(queue, email, password, pair, test_order=False,take_profit_8=False,di
                 progress('Validando conta e condições para uma ordem demonstrativa de 100 unidades')
                 result.update(send_demo_test(client,take_profit_8=take_profit_8,direction=direction))
                 if take_profit_8 and result.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
+                    from learning import record_entry
+                    result['memory_recorded']=record_entry(result)
                     from profit_exit import monitor_profit
                     progress('Ordem confirmada; acompanhando recompra com alvo +8%')
                     result.update(monitor_profit(client,result,progress,lambda update:queue.put({'trade_update':update})))
