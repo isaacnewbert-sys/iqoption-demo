@@ -174,6 +174,8 @@ def run_session(client,pair,token,progress,emit):
     used.add(fresh['signal_id']);last_trade=time.monotonic();update(token,last_signal=fresh['signal_id'],used_signals=sorted(used)[-500:])
     entry.update(setup=fresh.get('setup'),regime=fresh.get('regime'),trigger=fresh.get('trigger'))
     if entry.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
+     from learning import record_entry
+     entry['memory_recorded']=record_entry(entry,fresh)
      tracker.bind(entry['order_id']);book.add(entry);update(token,submission_pending=False)
      outcome['orders_sent']+=1
      thread=threading.Thread(target=watch,args=(dict(entry),tracker,dict(fresh)),daemon=True);threads.append(thread);thread.start();publish(analysis=fresh)
