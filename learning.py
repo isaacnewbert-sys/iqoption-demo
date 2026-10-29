@@ -17,7 +17,10 @@ class Memory:
    with sqlite3.connect(self.local,timeout=2) as db:yield db,'?'
   elif self.url:
    import psycopg
-   with psycopg.connect(self.url,connect_timeout=2,options='-c statement_timeout=2000 -c lock_timeout=1000') as db:yield db,'%s'
+   with psycopg.connect(self.url,connect_timeout=8) as db:
+    db.execute('SET LOCAL statement_timeout=2000')
+    db.execute('SET LOCAL lock_timeout=1000')
+    yield db,'%s'
   else:raise RuntimeError('Persistent learning database is not configured')
  def schema(self,db):
   db.execute('CREATE TABLE IF NOT EXISTS iq_memory (wallet TEXT NOT NULL, order_id TEXT NOT NULL, entry_data TEXT, outcome_data TEXT, PRIMARY KEY(wallet,order_id))')
@@ -107,6 +110,8 @@ def check_storage():
  import uuid
  if not os.environ.get('LEARNING_DATABASE_URL'):return {'configured':False,'available':False,'status':'NOT_CONFIGURED'}
  key=uuid.uuid4().hex
+ url=os.environ.get('LEARNING_DATABASE_URL','').strip()
+ if not url.startswith(('postgresql://','postgres://')):return {'configured':True,'available':False,'status':'INVALID_CONNECTION_URL'}
  try:
   memory=Memory()
   with memory.db() as (db,p):
@@ -119,4 +124,9 @@ def check_storage():
    counts=db.execute('SELECT COUNT(*), COUNT(entry_data), COUNT(outcome_data) FROM iq_memory').fetchone()
   ok=bool(found and found[0]=='durability-check')
   return {'configured':True,'available':ok,'status':'WRITE_READ_VERIFIED' if ok else 'READBACK_FAILED','records':counts[0],'entries':counts[1],'outcomes':counts[2],'mode':'SHADOW_NO_EXECUTION_CHANGES'}
- except Exception as error:return {'configured':True,'available':False,'status':'DATABASE_CHECK_FAILED','error_category':type(error).__name__}
+ except Exception as error:
+  message=str(error).lower()
+  categories=[('authentication',('password authentication','authentication failed')),('dns',('could not translate host','name or service not known','nodename nor servname')),('timeout',('timeout','timed out')),('ssl',('ssl','certificate')),('startup_parameter',('startup parameter','unsupported parameter')),('database',('database does not exist','database \"')),('connection_refused',('connection refused',)),('permission',('permission denied',)),('url_format',('invalid conninfo','invalid dsn','invalid connection option'))]
+  category=next((name for name,patterns in categories if any(p in message for p in patterns)),'unclassified')
+  return {'configured':True,'available':False,'status':'DATABASE_CHECK_FAILED','error_category':type(error).__name__,'reason_category':category}
+
