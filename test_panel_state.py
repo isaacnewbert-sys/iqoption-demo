@@ -7,6 +7,11 @@ class Tests(unittest.TestCase):
   self.patcher=patch.object(app,'STATE_DB',self.db);self.patcher.start()
   app.state.update(running=False,result=None,started_at=None,stage='Aguardando teste')
  def tearDown(self):self.patcher.stop();self.folder.cleanup()
+ def test_memory_error_does_not_break_authenticated_status(self):
+  import base64
+  with patch.dict(os.environ,{'PANEL_PASSWORD':'local-test'}),patch.object(app.trade_memory,'snapshot',side_effect=ImportError('partially initialized module')):
+   r=app.app.test_client().get('/status',headers={'Authorization':'Basic '+base64.b64encode(b'isaac:local-test').decode()})
+  self.assertEqual(r.status_code,200);self.assertEqual(r.json['learning']['mode'],'MEMORY_STATUS_UNAVAILABLE');self.assertIn('running',r.json)
  def test_shared_state_between_module_instances(self):
   token=app.begin_job()
   spec=importlib.util.spec_from_file_location('other_panel',app.__file__)
