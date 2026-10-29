@@ -1,5 +1,6 @@
 import unittest,tempfile,os
-from learning import Memory,summarize
+from learning import Memory,summarize,check_storage
+from unittest.mock import patch
 class Tests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.db=Memory(url='',local=self.tmp.name+'/memory.db')
@@ -41,6 +42,13 @@ class Tests(unittest.TestCase):
  def test_overlapping_train_validation_does_not_promote(self):
   rows=self.examples();rows[0]['outcome']['recorded_at']=1000
   self.assertEqual(summarize(rows,asof=2000)['contexts'][0]['shadow_priority_delta'],0)
+ def test_probe_commits_across_connections_without_fake_trade(self):
+  with patch.dict(os.environ,{'LEARNING_DATABASE_URL':'postgresql://placeholder'}),patch('learning.Memory',return_value=self.db):r=check_storage()
+  self.assertEqual(r['status'],'WRITE_READ_VERIFIED');self.assertEqual(r['records'],0)
+  self.assertEqual(self.db.rows(4),[])
+ def test_pasted_shell_command_is_rejected_without_exposing_secret(self):
+  with patch.dict(os.environ,{'LEARNING_DATABASE_URL':"psql 'postgresql://user:SECRET@host/db'"}):r=check_storage()
+  self.assertEqual(r['status'],'INVALID_CONNECTION_URL');self.assertNotIn('SECRET',str(r))
  def test_secrets_not_saved(self):
   self.db.entry(dict(self.e,password='SECRET'),dict(self.a,password='SECRET'),at=1)
   self.assertNotIn('SECRET',str(self.db.rows(4)))
