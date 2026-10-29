@@ -43,7 +43,6 @@ class Memory:
    self.schema(db)
    # First confirmed entry/outcome is immutable. Duplicate events never multiply P/L.
    db.execute(f'INSERT INTO iq_memory(wallet,order_id,{column}) VALUES({p},{p},{p}) ON CONFLICT(wallet,order_id) DO UPDATE SET {column}=COALESCE(iq_memory.{column},excluded.{column})',(wallet,oid,data))
-  with _lock:_cache.clear()
   return True
  def rows(self,wallet):
   with self.db() as (db,p):
@@ -91,12 +90,33 @@ def record_outcome(r):
  except Exception:return False
 
 def snapshot(wallet):
+ if wallet is None:return {'configured':bool(os.environ.get('LEARNING_DATABASE_URL')),'durable':False,'available':False,'mode':'WAITING_FOR_DEMO_WALLET'}
  if not os.environ.get('LEARNING_DATABASE_URL'):return {'configured':False,'durable':False,'mode':'NOT_CONFIGURED'}
  key=str(wallet)
  with _lock:
   cached=_cache.get(key)
-  if cached and time.monotonic()-cached[0]<10:return cached[1]
+  if cached and time.monotonic()-cached[0]<900:return cached[1]
  try:result=dict(summarize(Memory().rows(wallet)),configured=True,durable=True,available=True)
- except Exception:return {'configured':True,'durable':False,'available':False,'mode':'DATABASE_UNAVAILABLE'}
+ except Exception:result={'configured':True,'durable':False,'available':False,'mode':'DATABASE_UNAVAILABLE'}
  with _lock:_cache[key]=(time.monotonic(),result)
  return result
+
+
+def check_storage():
+ """Separate connections prove committed storage; no fake trade or credentials."""
+ import uuid
+ if not os.environ.get('LEARNING_DATABASE_URL'):return {'configured':False,'available':False,'status':'NOT_CONFIGURED'}
+ key=uuid.uuid4().hex
+ try:
+  memory=Memory()
+  with memory.db() as (db,p):
+   memory.schema(db)
+   db.execute('CREATE TABLE IF NOT EXISTS iq_memory_probe (id TEXT PRIMARY KEY, value TEXT NOT NULL)')
+   db.execute(f'INSERT INTO iq_memory_probe(id,value) VALUES({p},{p})',(key,'durability-check'))
+  with memory.db() as (db,p):
+   found=db.execute(f'SELECT value FROM iq_memory_probe WHERE id={p}',(key,)).fetchone()
+   db.execute(f'DELETE FROM iq_memory_probe WHERE id={p}',(key,))
+   counts=db.execute('SELECT COUNT(*), COUNT(entry_data), COUNT(outcome_data) FROM iq_memory').fetchone()
+  ok=bool(found and found[0]=='durability-check')
+  return {'configured':True,'available':ok,'status':'WRITE_READ_VERIFIED' if ok else 'READBACK_FAILED','records':counts[0],'entries':counts[1],'outcomes':counts[2],'mode':'SHADOW_NO_EXECUTION_CHANGES'}
+ except Exception as error:return {'configured':True,'available':False,'status':'DATABASE_CHECK_FAILED','error_category':type(error).__name__}
