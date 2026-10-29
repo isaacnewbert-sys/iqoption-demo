@@ -1,6 +1,6 @@
 """Six concurrent market streams, one demo wallet and causal per-entry ranking."""
 import time,threading,uuid
-from settings import basket_pairs,TRADE_AMOUNT,MAX_OPEN_POSITIONS
+from settings import basket_pairs,TRADE_AMOUNT,MAX_OPEN_POSITIONS,MIN_SECONDS_TO_EXPIRY
 from strategy import analyze,candle
 from profit_exit import ProfitTracker,monitor_profit,number
 from auto_session import change,update,establish,settle,stopped,demo_balance,no_positions,TrackerGroup,PositionBook
@@ -107,6 +107,7 @@ def rank_markets(hub,book,used,now=None):
    if market.refresh_error:row['status']='ERRO_ATUALIZACAO'
    elif age is None or age>3 or history_age is None or history_age>35:row['status']='DADOS_ATRASADOS'
    elif not contracts:row['status']='CONTRATO_INDISPONIVEL'
+   elif min(c['expiration_timestamp'] for c in contracts)-server_now<=MIN_SECONDS_TO_EXPIRY:row['status']='ULTIMO_MINUTO'
    elif a.get('checks',{}).get('history') is False or a.get('checks',{}).get('continuous_history') is False:row['status']='HISTORICO_INCOMPLETO'
    elif not a.get('direction'):row['status']='SEM_SINAL'
    elif key in used:row['status']='SINAL_UTILIZADO'
@@ -150,7 +151,7 @@ def run_basket_session(client,mode,token,progress,emit):
   hub.bootstrap(progress)
   if not no_positions(client):result['blocking_reason']='POSICAO_DIGITAL_PREVIA_OU_CONSULTA_NAO_CONFIRMADA';raise RuntimeError('Existing positions')
   balance,bid=demo_balance(client);establish(token,balance,bid)
-  used=set(change().get('used_signals',[]));last_trade=float('-inf');deadline=time.monotonic()+21600
+  used=set(change().get('used_signals',[]));retry_after={};deadline=time.monotonic()+21600
   while time.monotonic()<deadline and not stopped(token):
    s=change()
    if s.get('target_reached') or s.get('uncertain'):break
@@ -158,15 +159,21 @@ def run_basket_session(client,mode,token,progress,emit):
    hub.refresh();rows=rank_markets(hub,book,used);candidates=[r for r in rows if r['status']=='CANDIDATO'];winner=candidates[0] if candidates else None
    preview=winner or next((r for r in rows if r['status'] in ('SEM_SINAL','SINAL_UTILIZADO','LIMITE_OU_DIRECAO')),None)
    with lock:
-    result.update(ranking=rows,analysis=preview['analysis'] if preview else {'direction':None,'reason':'Nenhum sinal elegível neste ciclo. Consulte os motivos no radar.'},feed=preview['feed'] if preview else {},analysis_pair=preview['pair'] if preview else None,selected_pair=winner['pair'] if winner else None,execution_checks={'signal_present':bool(winner),'new_signal':bool(winner),'cooldown_seconds_remaining':max(0,round(60-(time.monotonic()-last_trade),1)),'capacity_and_direction':len(book.active())<MAX_OPEN_POSITIONS,'session_target_reached':bool(s.get('target_reached')),'uncertain':bool(s.get('uncertain'))})
+    result.update(ranking=rows,analysis=preview['analysis'] if preview else {'direction':None,'reason':'Nenhum sinal elegível neste ciclo. Consulte os motivos no radar.'},feed=preview['feed'] if preview else {},analysis_pair=preview['pair'] if preview else None,selected_pair=winner['pair'] if winner else None,execution_checks={'signal_present':bool(winner),'new_signal':bool(winner),'cooldown_seconds_remaining':0,'batch_capacity':MAX_OPEN_POSITIONS-len(book.active()),'capacity_and_direction':len(book.active())<MAX_OPEN_POSITIONS,'session_target_reached':bool(s.get('target_reached')),'uncertain':bool(s.get('uncertain'))})
    progress('Analisando 6 pares · '+('melhor sinal: '+winner['pair']+' · prioridade '+str(winner['priority']) if winner else 'aguardando sinal elegível'));publish()
-   if winner and time.monotonic()-last_trade>=60:
+   attempted=set()
+   for batch_slot in range(MAX_OPEN_POSITIONS):
+    if len(book.active())>=MAX_OPEN_POSITIONS or stopped(token) or change().get('uncertain') or change().get('target_reached'):break
+    latest=rank_markets(hub,book,used)
+    winner=next((r for r in latest if r['status']=='CANDIDATO' and r['signal_key'] not in attempted and time.monotonic()>=retry_after.get(r['signal_key'],0)),None)
+    if not winner:break
+    attempted.add(winner['signal_key'])
     available,current_bid=demo_balance(client)
     if current_bid!=bid or number(available) is None or number(available)<TRADE_AMOUNT:result['blocking_reason']='SALDO_INSUFICIENTE_PARA_100';break
     # Compare ALL six again immediately before the only order write.
     validated=[None]
     def guard():
-     state=change();latest=rank_markets(hub,book,used);ready=[r for r in latest if r['status']=='CANDIDATO']
+     state=change();latest=rank_markets(hub,book,used);ready=[r for r in latest if r['status']=='CANDIDATO' and (r['signal_key']==winner['signal_key'] or (r['signal_key'] not in attempted and time.monotonic()>=retry_after.get(r['signal_key'],0)))]
      valid=not stopped(token) and not state.get('target_reached') and not state.get('uncertain') and bool(ready) and ready[0]['signal_key']==winner['signal_key']
      if valid:validated[0]=ready[0]
      return valid
@@ -176,7 +183,7 @@ def run_basket_session(client,mode,token,progress,emit):
     finally:client.trace=root
     choice=validated[0] or winner
     entry.update(pair=market.trace.pair,requested_pair=choice['pair'],amount=TRADE_AMOUNT,setup=choice['analysis'].get('setup'),regime=choice['analysis'].get('regime'),priority=choice['priority'],trigger=choice['analysis'].get('trigger'))
-    last_trade=time.monotonic()
+    retry_after[winner['signal_key']]=time.monotonic()+15
     if entry.get('order_attempted'):
      used.add(winner['signal_key']);update(token,used_signals=sorted(used)[-1000:])
     if entry.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
@@ -194,6 +201,7 @@ def run_basket_session(client,mode,token,progress,emit):
      group.remove(tracker);update(token,submission_pending=False)
      with lock:result['last_entry']=entry
     publish()
+   if result.get('blocking_reason')=='SALDO_INSUFICIENTE_PARA_100':break
    time.sleep(2)
   result['automation_status']='META_ATINGIDA' if change().get('target_reached') else 'SESSAO_PAUSADA'
  except Exception:
