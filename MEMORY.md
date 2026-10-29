@@ -1,7 +1,7 @@
 # Persistent demo trade memory — memory-v1-shadow
 
 Prepared for PostgreSQL, not enabled until LEARNING_DATABASE_URL is securely configured.
-No new paid resource or live deployment is created by this change.
+No paid resource is required. The user created a free external Neon project and configured LEARNING_DATABASE_URL in Render. Activation uses that existing project, never provisions a paid Render database.
 
 ## Stored evidence
 
@@ -22,8 +22,8 @@ The memory does not change stake 100, max three positions, +8% trade exit, fixed
 
 ## Deployment plan
 
-1. Provision a non-expiring PostgreSQL database in Virginia, same workspace as the app, after approving its recurring charge. Alternatively provide an existing persistent PostgreSQL service.
-2. Set the internal connection URL as protected LEARNING_DATABASE_URL. Never commit it. New dependency: psycopg[binary] 3.2.10.
+1. Use the existing Neon Free project (AWS Ohio), with a pooled TLS URL. Observe its free compute/storage/network quotas; continuous trading can exhaust compute allowance. Do not promise unlimited free uptime.
+2. Set its external pooled TLS connection URL as protected LEARNING_DATABASE_URL. Never commit it. New dependency: psycopg[binary] 3.2.10.
 3. Run integration checks on an isolated database: schema creation, idempotent entries/outcomes, process restart retention, wallet isolation, unavailable DB and restore/export.
 4. Deploy only after current demo positions finish. Sessions currently use ephemeral SQLite; this change persists learning records only and does not make session control or free web hosting continuous.
 5. Check authenticated /status.learning and the memory card. Confirm real writes and import counts; don't report the DB as active based solely on code tests.
@@ -31,4 +31,4 @@ The memory does not change stake 100, max three positions, +8% trade exit, fixed
 
 ## Validation
 
-101 local tests passed (11 new memory tests), plus dashboard JavaScript syntax check. SQLite is an isolated test double, never advertised as durable Render storage. Live PostgreSQL integration and forward statistical validation remain pending.
+101 local tests passed (11 new memory tests), plus dashboard JavaScript syntax check. SQLite is an isolated test double, never advertised as durable Render storage. Startup checks commit an isolated non-trade marker and read it through a second PostgreSQL connection, then remove it. Health returns sanitized results only. Summary reads are cached for 15 minutes, including failures; per-trade writes do not invalidate the cache. This reduces reads but does not eliminate compute used by continuous trade writes. Live PostgreSQL integration and forward statistical validation remain pending.
