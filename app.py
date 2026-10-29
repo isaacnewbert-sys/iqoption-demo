@@ -76,6 +76,8 @@ def status():
  current['session']={k:session.get(k) for k in ('initial_balance','target','realized','target_reached','active','stop','uncertain','submission_pending','max_positions','pair')}
  current['journal']=[{k:r.get(k) for k in ('order_id','direction','pnl','setup','regime','pair','amount')} for r in session.get('ledger',[])[-20:]]
  current['trades_completed']=len(session.get('ledger',[]))
+ from learning import snapshot as learning_snapshot
+ current['learning']=learning_snapshot(session.get('balance_id'))
  return jsonify(current)
 def run_process(args,timeout,job_id=None):
  """Stream only structured progress; kill the SDK child on the wall-clock deadline."""
