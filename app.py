@@ -3,6 +3,7 @@ from flask import Flask,request,Response,jsonify
 from pathlib import Path
 from probe import VERSION
 from auto_session import MAX_OPEN_POSITIONS
+import learning as trade_memory
 from settings import TRADE_AMOUNT,ALLOWED_MARKETS,SINGLE_PAIRS,BASKET_MODES
 app=Flask(__name__)
 state={'stage':'Aguardando teste','started_at':None,'running':False,'result':None,'demo_test_orders_enabled':True,'real_orders_enabled':False}
@@ -82,8 +83,8 @@ def status():
  current['session']={k:session.get(k) for k in ('initial_balance','target','realized','target_reached','active','stop','uncertain','submission_pending','max_positions','pair')}
  current['journal']=[{k:r.get(k) for k in ('order_id','direction','pnl','setup','regime','pair','amount')} for r in session.get('ledger',[])[-20:]]
  current['trades_completed']=len(session.get('ledger',[]))
- from learning import snapshot as learning_snapshot
- current['learning']=learning_snapshot(session.get('balance_id'))
+ try:current['learning']=trade_memory.snapshot(session.get('balance_id'))
+ except Exception:current['learning']={'configured':bool(os.environ.get('LEARNING_DATABASE_URL')),'available':False,'durable':False,'mode':'MEMORY_STATUS_UNAVAILABLE'}
  return jsonify(current)
 def run_process(args,timeout,job_id=None):
  """Stream only structured progress; kill the SDK child on the wall-clock deadline."""
@@ -274,8 +275,7 @@ def release_demo_test():
 
 def market_preflight():
  """Read-only broker checks plus an isolated database durability probe."""
- from learning import check_storage
- MEMORY_CHECK.update(check_storage())
+ MEMORY_CHECK.update(trade_memory.check_storage())
  with open('/tmp/iq-memory-check.json','w') as f:json.dump(MEMORY_CHECK,f)
  print('IQ_MEMORY_STORAGE '+json.dumps(MEMORY_CHECK),flush=True)
  try:
