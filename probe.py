@@ -8,8 +8,8 @@ import sys
 import re
 import time
 
-VERSION = 'server-v30-persistent-memory'
-from settings import TRADE_AMOUNT,BASKET_MODES
+VERSION = 'server-v31-candle-batch'
+from settings import TRADE_AMOUNT,BASKET_MODES,MIN_SECONDS_TO_EXPIRY
 
 PIN = '8a903cc094a74af1ed935a56a2d6b5a9ed3319d7'
 
@@ -334,11 +334,14 @@ def send_demo_test(client,take_profit_8=False,direction="call",entry_guard=None,
     if not contract:return blocked('BLOQUEADO_SEM_CONTRATO_5M_VALIDO')
     instrument=next((i for i in trace.instruments if i['period']==300 and i['expiration']==contract['expiration_timestamp'] and any(d['symbol']==contract['symbol'] and d['direction']==direction for d in i['symbols'])),None)
     if not instrument:return blocked('BLOQUEADO_INSTRUMENTO_NAO_CONFIRMADO')
+    if instrument['expiration']-client.api.timesync.server_timestamp<=MIN_SECONDS_TO_EXPIRY:return blocked('BLOQUEADO_ULTIMO_MINUTO')
     if instrument['expiration']-instrument['deadtime']-client.api.timesync.server_timestamp<15:return blocked('BLOQUEADO_VENCIMENTO_PROXIMO')
     # Recheck account immediately before the only write; never construct a contract ID.
     if client.get_balance_mode()!='PRACTICE' or client.get_balance_id()!=balance_id:return blocked('BLOQUEADO_CONTA_ALTERADA')
     if entry_guard is not None and not entry_guard():return blocked('BLOQUEADO_SINAL_OU_SESSAO_ALTERADA')
     import uuid
+    if instrument['expiration']-client.api.timesync.server_timestamp<=MIN_SECONDS_TO_EXPIRY:return blocked('BLOQUEADO_ULTIMO_MINUTO')
+    if instrument['expiration']-instrument['deadtime']-client.api.timesync.server_timestamp<15:return blocked('BLOQUEADO_VENCIMENTO_PROXIMO')
     trace.order_request_id='demo-test-'+uuid.uuid4().hex
     trace.order_attempted=True
     payload={'name':'digital-options.place-digital-option','version':'3.0','body':{
