@@ -26,6 +26,17 @@ class Tests(unittest.TestCase):
  def test_demo_only(self):
   r=send_demo_test(self.c);self.assertEqual(r['orders_sent'],1);self.assertEqual(r['order_id'],99)
   self.assertEqual(len(self.c.api.calls),1);body=self.c.api.calls[0][1]['body'];self.assertEqual(body['amount'],'100');self.assertEqual(body['user_balance_id'],1234);self.assertEqual(body['asset_id'],1861)
+ def test_final_minute_is_blocked_including_exact_boundary(self):
+  for remaining in (60,59,31):
+   c=Client();c.api.timesync.server_timestamp=1793138700-remaining
+   result=send_demo_test(c)
+   self.assertEqual(result['order_status'],'BLOQUEADO_ULTIMO_MINUTO');self.assertFalse(c.api.calls)
+  c=Client();c.api.timesync.server_timestamp=1793138700-61
+  self.assertEqual(send_demo_test(c)['orders_sent'],1)
+ def test_expiry_is_rechecked_after_slow_entry_guard(self):
+  def guard():self.c.api.timesync.server_timestamp=1793138700-60;return True
+  result=send_demo_test(self.c,entry_guard=guard)
+  self.assertEqual(result['order_status'],'BLOQUEADO_ULTIMO_MINUTO');self.assertFalse(self.c.api.calls)
  def test_put_uses_broker_put_symbol(self):
   r=send_demo_test(self.c,direction='put')
   self.assertEqual(r['direction'],'put');self.assertEqual(r['orders_sent'],1)
