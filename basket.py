@@ -180,6 +180,9 @@ def run_basket_session(client,mode,token,progress,emit):
     if entry.get('order_attempted'):
      used.add(winner['signal_key']);update(token,used_signals=sorted(used)[-1000:])
     if entry.get('order_status')=='ORDEM_DEMO_CONFIRMADA':
+     from learning import record_entry
+     entry['selection_snapshot']={'priority':choice['priority'],'evaluated_at':choice['evaluated_at'],'markets_compared':6,'feed':choice['feed']}
+     entry['memory_recorded']=record_entry(entry,choice['analysis'])
      tracker.bind(entry['order_id']);book.add(entry);update(token,submission_pending=False)
      with lock:result['orders_sent']+=1;result['last_selection']={'pair':winner['pair'],'signal_key':winner['signal_key'],'priority':choice['priority'],'compared_at':choice['evaluated_at'],'markets_compared':6,'rule':'Maior prioridade por contexto, momento, espaço e spread entre os sinais válidos; desempate pelo nome do par'}
      thread=threading.Thread(target=watch,args=(dict(entry),tracker),daemon=True);threads.append(thread);thread.start()
