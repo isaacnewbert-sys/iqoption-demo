@@ -57,6 +57,12 @@ class Tests(unittest.TestCase):
   h.markets['EURUSD'].trace.strategy_received-=10;h.markets['GBPUSD'].trace.new_packets=[];h.markets['USDCHF'].trace=None
   states={r['pair']:r['status'] for r in rank_markets(h,PositionBook(),used)}
   self.assertEqual(states['EURUSD'],'DADOS_ATRASADOS');self.assertEqual(states['GBPUSD'],'CONTRATO_INDISPONIVEL');self.assertEqual(states['USDCHF'],'ATIVO_INDISPONIVEL');self.assertEqual(states['AUDUSD'],'SINAL_UTILIZADO')
+ def test_radar_excludes_final_minute_before_signal_ranking(self):
+  c,h,_=client_hub();seed(c,h);now=(NOW//300+1)*300-60
+  c.api.timesync.server_timestamp=now
+  for m in h.markets.values():
+   for packet in m.trace.new_packets:packet['quote_time']=now
+  self.assertTrue(all(r['status']=='ULTIMO_MINUTO' for r in rank_markets(h,PositionBook(),set())))
  def test_normal_and_otc_do_not_fall_back_to_each_other(self):
   c,h,_=client_hub();self.assertEqual(h.markets['EURUSD'].trace.pair,'EURUSD-op')
   c,h,_=client_hub('MAJORS-OTC');self.assertEqual(h.markets['EURUSD-OTC'].trace.pair,'EURUSD-OTC')
@@ -80,8 +86,11 @@ class Tests(unittest.TestCase):
    def mock_send(client,**kw):
     self.assertTrue(kw['entry_guard']());sent.append(client.trace.pair)
     return dict(order_id=1,orders_sent=1,order_status='ORDEM_DEMO_CONFIRMADA',order_attempted=True,direction=kw['direction'],expiration_timestamp=NOW+200)
-   def closed(client,entry,*args,**kwargs):return dict(entry,monitor_status='FECHAMENTO_ANTECIPADO_CONFIRMADO',broker_pnl_realized=8)
-   with patch('basket.MarketHub',return_value=h),patch.object(h,'bootstrap'),patch.object(h,'refresh'),patch('basket.no_positions',return_value=True),patch('basket.demo_balance',return_value=(800,4)),patch('probe.send_demo_test',side_effect=mock_send),patch('basket.monitor_profit',side_effect=closed),patch('basket.time.sleep'):
+   def closed(client,entry,*args,**kwargs):
+    result=dict(entry,monitor_status='FECHAMENTO_ANTECIPADO_CONFIRMADO',broker_pnl_realized=8)
+    session.settle(token,result)
+    return result
+   with patch('basket.MarketHub',return_value=h),patch.object(h,'bootstrap'),patch.object(h,'refresh'),patch('basket.no_positions',return_value=True),patch('basket.demo_balance',return_value=(800,4)),patch('probe.send_demo_test',side_effect=mock_send),patch('basket.monitor_profit',side_effect=closed),patch('basket.MAX_OPEN_POSITIONS',1),patch('basket.time.sleep'):
     result=run_basket_session(c,'MAJORS',token,lambda _:None,lambda _:None)
    self.assertEqual(sent,['AUDUSD-op']);self.assertEqual(result['automation_status'],'META_ATINGIDA');self.assertEqual(session.change()['ledger'][0]['amount'],100);self.assertIsNone(c.trace.market_hub)
  def test_changed_winner_before_wire_blocks_the_previous_choice(self):
@@ -104,13 +113,13 @@ class Tests(unittest.TestCase):
    self.assertEqual(send.call_count,1);self.assertTrue(session.change()['uncertain']);self.assertEqual(result['last_entry']['amount'],100)
  def test_three_best_available_pairs_are_monitored_and_fourth_is_blocked(self):
   with tempfile.TemporaryDirectory() as folder,patch.object(session,'DB',folder+'/session'):
-   c,h,_=client_hub();seed(c,h);token=session.claim('MAJORS');clock=[1000];gate=threading.Event();sent=[];observations=[0]
+   c,h,_=client_hub();seed(c,h);token=session.claim('MAJORS');clock=[1000];gate=threading.Event();sent=[];send_times=[];observations=[0]
    def refresh():
     for m in h.markets.values():
      m.history_received=m.trace.strategy_received=clock[0]
      for packet in m.trace.new_packets:packet['received_at_monotonic']=clock[0]
    def send(client,**kw):
-    self.assertTrue(kw['entry_guard']());sent.append(client.trace.pair)
+    self.assertTrue(kw['entry_guard']());sent.append(client.trace.pair);send_times.append(clock[0])
     return dict(order_id=len(sent),direction='call',amount=100,order_status='ORDEM_DEMO_CONFIRMADA',orders_sent=1,order_attempted=True,expiration_timestamp=NOW+200)
    def monitor(client,entry,*args,**kw):
     self.assertEqual(kw['tracker'].expected_investment,100)
@@ -123,7 +132,7 @@ class Tests(unittest.TestCase):
    def sleep(_):clock[0]+=61;threading.Event().wait(.002)
    with patch('basket.MarketHub',return_value=h),patch.object(h,'bootstrap'),patch.object(h,'refresh',side_effect=refresh),patch('basket.no_positions',return_value=True),patch('basket.demo_balance',return_value=(10000,4)),patch('probe.send_demo_test',side_effect=send),patch('basket.monitor_profit',side_effect=monitor),patch('basket.time.monotonic',side_effect=lambda:clock[0]),patch('basket.time.sleep',side_effect=sleep):
     result=run_basket_session(c,'MAJORS',token,lambda _:None,emit)
-   self.assertEqual(sent,['AUDUSD-op','EURUSD-op','GBPUSD-op']);self.assertEqual(result['orders_sent'],3);self.assertEqual(session.change()['realized'],'24');self.assertTrue(all(r['monitor_finished'] for r in result['positions']))
+   self.assertEqual(sent,['AUDUSD-op','EURUSD-op','GBPUSD-op']);self.assertEqual(send_times,[1000,1000,1000]);self.assertEqual(result['orders_sent'],3);self.assertEqual(session.change()['realized'],'24');self.assertTrue(all(r['monitor_finished'] for r in result['positions']))
  def test_insufficient_demo_balance_never_sends_an_order(self):
   with tempfile.TemporaryDirectory() as folder,patch.object(session,'DB',folder+'/session'):
    c,h,_=client_hub();seed(c,h);token=session.claim('MAJORS')
