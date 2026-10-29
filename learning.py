@@ -28,7 +28,7 @@ class Memory:
   if r.get('account')!='PRACTICE' or r.get('order_status')!='ORDEM_DEMO_CONFIRMADA' or not r.get('order_id') or not r.get('balance_id'):return False
   stake=number(r.get('amount'))
   if stake is None or stake<=0:return False
-  a=context or {};fields=('strategy_version','regime','setup','direction','signal_id','trigger','support','resistance','atr','ema9','ema21','macro_fast','macro_slow','efficiency','checks','invalidation_reference')
+  a=context or {};fields=('strategy_version','regime','setup','direction','signal_id','trigger','support','resistance','atr','ema9','ema21','macro_fast','macro_slow','efficiency','checks','invalidation_reference','candle_sequence')
   row={k:r.get(k) for k in ('pair','direction','amount','asset_id','expiration_timestamp')}
   row.update(recorded_at=time.time() if at is None else at,analysis={k:a[k] for k in fields if k in a},provenance='bot_entry',model_version=VERSION,selection=r.get('selection_snapshot'))
   return self.write(str(r['balance_id']),str(r['order_id']),'entry_data',row)

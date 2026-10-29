@@ -1,6 +1,6 @@
 """Causal, experimental demo setups selected by regime. No profitability claim."""
 import math
-VERSION='regime-v2'
+VERSION='regime-v3-sequences'
 
 def candle(row):
  try:
@@ -23,6 +23,35 @@ def atr14(bars):
  atr=sum(ranges[:14])/14
  for value in ranges[14:]:atr=(13*atr+value)/14
  return atr
+
+def sequence_reversal(closed,current,atr,regime):
+ """Experimental counter-sequence setup: closed bars + live break, never color alone."""
+ if regime not in ('LATERAL','TRANSICAO') or atr<=0:return None
+ last=closed[-1];side=1 if last['close']>last['open'] else -1 if last['close']<last['open'] else 0
+ if not side:return None
+ sequence=[]
+ for c in reversed(closed):
+  width=c['max']-c['min'];body=abs(c['close']-c['open'])
+  direction=1 if c['close']>c['open'] else -1 if c['close']<c['open'] else 0
+  if direction!=side:break
+  # A doji/flat bar breaks the sequence rather than being silently counted.
+  if width<=0 or body<max(.05*atr,.15*width):return None
+  sequence.append(c)
+  if len(sequence)>3:return None
+ n=len(sequence)
+ if n not in (2,3):return None
+ sequence.reverse();prior=closed[-n-20:-n]
+ if len(prior)<20:return None
+ if any((b['close']-a['close'])*side<=0 for a,b in zip(sequence,sequence[1:])):return None
+ floor=min(c['min'] for c in prior);ceiling=max(c['max'] for c in prior)
+ extent=(sequence[-1]['close']-sequence[0]['open'])*side
+ width=last['max']-last['min'];body=abs(last['close']-last['open']);previous_body=abs(sequence[-2]['close']-sequence[-2]['open'])
+ wick=last['max']-max(last['open'],last['close']) if side>0 else min(last['open'],last['close'])-last['min']
+ location=last['max']>=ceiling-.25*atr if side>0 else last['min']<=floor+.25*atr
+ fading=body<=.75*previous_body or wick>=max(.35*width,body)
+ level=last['min'] if side>0 else last['max'];move=(level-current['close']) if side>0 else (current['close']-level)
+ if not (extent>=n*.30*atr and location and fading and 0<move<=.5*atr):return None
+ return {'direction':'put' if side>0 else 'call','count':n,'trigger':level,'invalidation':max(c['max'] for c in sequence) if side>0 else min(c['min'] for c in sequence),'detail':{'count':n,'sequence_direction':'up' if side>0 else 'down','closed_from':[int(c['from']) for c in sequence],'extension_atr':round(extent/atr,4),'weakening':True,'location':True,'trigger_confirmed':True}}
 
 def evaluate(closed,current):
  prices=[b['close'] for b in closed];fast=ema(prices,9);slow=ema(prices,21);atr=atr14(closed)
@@ -78,6 +107,12 @@ def evaluate(closed,current):
   labels={'location':'recuo/reteste em região válida','confirmation':'vela de retomada','trigger':'rompimento do gatilho','not_chasing':'preço sem esticamento','room_to_barrier':'espaço antes da barreira'}
   missing=[labels[k] for k in labels if not checks.get(k,True)]
   return dict(base,direction=None,setup='CONTINUACAO',reason='Tendência identificada; aguardando '+', '.join(missing),checks=checks)
+ # Two/three same-color closed bars are insufficient without region + exhaustion + live break.
+ seq=sequence_reversal(closed,current,atr,regime)
+ if seq:
+  result=signal(seq['direction'],'REVERSAO_SEQUENCIA_'+str(seq['count']),'Sequência de '+str(seq['count'])+' velas fechadas, perda de força e rompimento contrário confirmados',seq['invalidation'])
+  result['candle_sequence']=seq['detail']
+  return result
  # Reversals belong to range/transition; never fight a classified trend.
  buy=prev['min']<=support+.25*atr and lower>=max(body*1.5,width*.35) and prev['close']>=prev['min']+.6*width
  sell=prev['max']>=resistance-.25*atr and upper>=max(body*1.5,width*.35) and prev['close']<=prev['min']+.4*width
