@@ -62,10 +62,15 @@ def protect():
 @app.after_request
 def headers(r):
  r.headers['Cache-Control']='no-store';r.headers['X-Content-Type-Options']='nosniff';r.headers['X-Frame-Options']='DENY';r.headers['Referrer-Policy']='no-referrer';return r
+def memory_check_state():
+ try:
+  with open('/tmp/iq-memory-check.json') as f:return json.load(f)
+ except (OSError,ValueError):return dict(MEMORY_CHECK)
+
 @app.get('/health')
 def health():
  current=snapshot()
- return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_DEMO_ONLY','automatic_demo_available':True,'max_positions':MAX_OPEN_POSITIONS,'trade_amount':TRADE_AMOUNT,'demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v30-persistent-memory','memory_storage':dict(MEMORY_CHECK),'diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
+ return {'ok':True,'orders_enabled':True,'orders_scope':'PRACTICE_DEMO_ONLY','automatic_demo_available':True,'max_positions':MAX_OPEN_POSITIONS,'trade_amount':TRADE_AMOUNT,'demo_test_orders_enabled':True,'real_orders_enabled':False,'probe_version':VERSION,'panel_version':'v30-persistent-memory','memory_storage':memory_check_state(),'diagnostic_running':current['running'],'diagnostic_completed':current['result'] is not None}
 @app.get('/')
 def index():
  return Path(__file__).with_name('dashboard.html').read_text(encoding='utf-8').replace('__MAX_POSITIONS__',str(MAX_OPEN_POSITIONS)).replace('__TRADE_AMOUNT__',str(TRADE_AMOUNT))
@@ -271,6 +276,7 @@ def market_preflight():
  """Read-only broker checks plus an isolated database durability probe."""
  from learning import check_storage
  MEMORY_CHECK.update(check_storage())
+ with open('/tmp/iq-memory-check.json','w') as f:json.dump(MEMORY_CHECK,f)
  print('IQ_MEMORY_STORAGE '+json.dumps(MEMORY_CHECK),flush=True)
  try:
   audit=run_process([sys.executable,'runner.py','--audit-history'],35,job_id='history-audit')
